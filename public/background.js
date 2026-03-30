@@ -12,6 +12,8 @@ const STORE_KEYS = {
   SETTINGS: "ln_settings",
   SESSION: "ln_shadow_session",
   SYNC_META: "ln_sync_meta",
+  BACKEND_STATUS: "ln_backend_status",
+  UNREAD_COUNT: "ln_unread_count",
   RECENT_FINGERPRINTS: "ln_recent_fingerprints",
   RECENT_TARGET_ADD: "ln_recent_target_add"
 };
@@ -24,10 +26,12 @@ const ALARM_IDS = {
 chrome.runtime.onInstalled.addListener(async () => {
   await ensureDefaultSettings();
   await registerContextMenus();
+  await recalculateUnreadCount();
   scheduleBackgroundSync();
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  void recalculateUnreadCount();
   scheduleBackgroundSync();
 });
 
@@ -82,6 +86,58 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === "LN_REQUEST_POPUP_EVENTS") {
       const events = await getEvents();
       sendResponse({ ok: true, events });
+      return;
+    }
+
+    if (message?.type === "LN_POPUP_GET_STATE") {
+      const [events, data] = await Promise.all([
+        getEvents(),
+        chrome.storage.local.get([
+          STORE_KEYS.SETTINGS,
+          STORE_KEYS.SESSION,
+          STORE_KEYS.SYNC_META,
+          STORE_KEYS.BACKEND_STATUS,
+          STORE_KEYS.UNREAD_COUNT
+        ])
+      ]);
+      sendResponse({
+        ok: true,
+        events,
+        settings: data[STORE_KEYS.SETTINGS] ?? {},
+        session: data[STORE_KEYS.SESSION] ?? null,
+        syncMeta: data[STORE_KEYS.SYNC_META] ?? { lastSyncAt: null },
+        backendStatus: data[STORE_KEYS.BACKEND_STATUS] ?? {},
+        unreadCount: data[STORE_KEYS.UNREAD_COUNT] ?? 0
+      });
+      return;
+    }
+
+    if (message?.type === "LN_POPUP_MARK_EVENT_READ") {
+      const next = await markEventRead(message?.payload?.eventId);
+      sendResponse({ ok: true, events: next });
+      return;
+    }
+
+    if (message?.type === "LN_POPUP_DISMISS_EVENT") {
+      const next = await dismissEvent(message?.payload?.eventId);
+      sendResponse({ ok: true, events: next });
+      return;
+    }
+
+    if (message?.type === "LN_POPUP_CLEAR_EVENTS") {
+      const next = await clearEvents();
+      sendResponse({ ok: true, events: next });
+      return;
+    }
+
+    if (message?.type === "LN_POPUP_REFRESH_TARGETS") {
+      await syncTargetsDelta();
+      const metaData = await chrome.storage.local.get([STORE_KEYS.SYNC_META, STORE_KEYS.BACKEND_STATUS]);
+      sendResponse({
+        ok: true,
+        syncMeta: metaData[STORE_KEYS.SYNC_META] ?? { lastSyncAt: null },
+        backendStatus: metaData[STORE_KEYS.BACKEND_STATUS] ?? {}
+      });
       return;
     }
 
@@ -158,9 +214,7 @@ async function registerContextMenus() {
 async function refreshMenusForTab(tabId) {
   const tab = await chrome.tabs.get(tabId);
   if (!tab?.url?.includes("linkedin.com")) return;
-
-  const context = getPageContext(tab.url);
-  chrome.action.setBadgeText({ tabId, text: context === "none" ? "" : "LN" });
+  await applyUnreadBadge();
 }
 
 function getPageContext(url) {
@@ -300,6 +354,56 @@ async function enqueueEvent(event) {
   const events = await getEvents();
   const next = [{ id: crypto.randomUUID(), createdAt: new Date().toISOString(), ...event }, ...events].slice(0, 100);
   await chrome.storage.local.set({ [STORE_KEYS.EVENTS]: next });
+  await recalculateUnreadCount(next);
+}
+
+async function markEventRead(eventId) {
+  if (!eventId) return getEvents();
+  const events = await getEvents();
+  const next = events.map((event) =>
+    event.id === eventId
+      ? {
+          ...event,
+          readAt: event.readAt ?? new Date().toISOString()
+        }
+      : event
+  );
+  await chrome.storage.local.set({ [STORE_KEYS.EVENTS]: next });
+  await recalculateUnreadCount(next);
+  return next;
+}
+
+async function dismissEvent(eventId) {
+  if (!eventId) return getEvents();
+  const events = await getEvents();
+  const next = events.filter((event) => event.id !== eventId);
+  await chrome.storage.local.set({ [STORE_KEYS.EVENTS]: next });
+  await recalculateUnreadCount(next);
+  return next;
+}
+
+async function clearEvents() {
+  const next = [];
+  await chrome.storage.local.set({ [STORE_KEYS.EVENTS]: next });
+  await recalculateUnreadCount(next);
+  return next;
+}
+
+async function recalculateUnreadCount(eventsInput) {
+  const events = eventsInput ?? (await getEvents());
+  const unreadCount = events.filter((event) => !event.readAt).length;
+  await chrome.storage.local.set({ [STORE_KEYS.UNREAD_COUNT]: unreadCount });
+  await applyUnreadBadge(unreadCount);
+  return unreadCount;
+}
+
+async function applyUnreadBadge(unreadCountInput) {
+  const unreadCount =
+    unreadCountInput ??
+    (await chrome.storage.local.get(STORE_KEYS.UNREAD_COUNT))[STORE_KEYS.UNREAD_COUNT] ??
+    0;
+  chrome.action.setBadgeBackgroundColor({ color: "#C62828" });
+  chrome.action.setBadgeText({ text: unreadCount > 0 ? String(Math.min(unreadCount, 99)) : "" });
 }
 
 async function notify(title, message) {
@@ -366,27 +470,27 @@ async function syncTargetsDelta() {
  * Placeholder backend call specs.
  */
 async function upsertTarget(payload) {
-  return {
+  return withBackendRetry("upsert_target", async () => ({
     status: "added",
     target_id: payload.profile_url,
     message: "Placeholder target upsert success"
-  };
+  }));
 }
 
 async function startShadowSessionApi(payload) {
-  return {
+  return withBackendRetry("start_shadow_session", async () => ({
     session_id: crypto.randomUUID(),
     status: "running",
     ...payload
-  };
+  }));
 }
 
 async function logTargetDetection(payload) {
-  return { status: "logged", payload };
+  return withBackendRetry("log_target_detection", async () => ({ status: "logged", payload }));
 }
 
 async function generateResponseSuggestion(payload) {
-  return {
+  return withBackendRetry("generate_response_suggestion", async () => ({
     suggestions: [
       "Great insight—curious how this has changed your strategy in 2026?",
       "Thanks for sharing. What signal do you watch first when prioritizing this?"
@@ -394,19 +498,72 @@ async function generateResponseSuggestion(payload) {
     best_suggestion: "Great insight—curious how this has changed your strategy in 2026?",
     confidence: 0.62,
     contextEcho: payload.context_type
-  };
+  }));
 }
 
 async function fetchFollowupReminders() {
-  return {
+  return withBackendRetry("fetch_followup_reminders", async () => ({
     reminders: []
-  };
+  }));
 }
 
 async function logInteractionBatch(payload) {
-  return { accepted_count: payload.events?.length ?? 0, rejected_count: 0 };
+  return withBackendRetry("log_interaction_batch", async () => ({
+    accepted_count: payload.events?.length ?? 0,
+    rejected_count: 0
+  }));
 }
 
 async function syncTargetsDeltaApi() {
-  return { changes: [] };
+  return withBackendRetry("sync_targets_delta", async () => ({ changes: [] }));
+}
+
+async function withBackendRetry(action, task, attempts = 2) {
+  let attempt = 0;
+  let lastError = null;
+
+  while (attempt < attempts) {
+    attempt += 1;
+    try {
+      const result = await task();
+      await recordBackendStatus({
+        action,
+        status: "ok",
+        retries: attempt - 1,
+        lastSuccessAt: new Date().toISOString(),
+        lastError: null
+      });
+      return result;
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        await wait(200);
+      }
+    }
+  }
+
+  await recordBackendStatus({
+    action,
+    status: "error",
+    retries: attempts - 1,
+    lastFailureAt: new Date().toISOString(),
+    lastError: lastError instanceof Error ? lastError.message : String(lastError)
+  });
+
+  throw lastError;
+}
+
+async function recordBackendStatus(update) {
+  const data = await chrome.storage.local.get(STORE_KEYS.BACKEND_STATUS);
+  const current = data[STORE_KEYS.BACKEND_STATUS] ?? {};
+  await chrome.storage.local.set({
+    [STORE_KEYS.BACKEND_STATUS]: {
+      ...current,
+      ...update
+    }
+  });
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
