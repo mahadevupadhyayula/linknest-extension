@@ -1,4 +1,5 @@
 import { CACHE_LIMITS, STORE_KEYS } from "./constants.js";
+const chrome = globalThis.chrome ?? globalThis.browser;
 
 export async function getEvents() {
   const data = await chrome.storage.local.get(STORE_KEYS.EVENTS);
@@ -56,6 +57,8 @@ export async function recalculateUnreadCount(eventsInput) {
 }
 
 export async function applyUnreadBadge(unreadCountInput) {
+  if (!chrome?.action?.setBadgeBackgroundColor || !chrome?.action?.setBadgeText) return;
+
   const unreadCount =
     unreadCountInput ?? (await chrome.storage.local.get(STORE_KEYS.UNREAD_COUNT))[STORE_KEYS.UNREAD_COUNT] ?? 0;
   chrome.action.setBadgeBackgroundColor({ color: "#C62828" });
@@ -63,6 +66,8 @@ export async function applyUnreadBadge(unreadCountInput) {
 }
 
 export async function notify(title, message) {
+  if (!chrome?.notifications?.create) return;
+
   const data = await chrome.storage.local.get(STORE_KEYS.SETTINGS);
   if (data[STORE_KEYS.SETTINGS]?.quietMode) return;
 

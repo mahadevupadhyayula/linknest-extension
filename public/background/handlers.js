@@ -16,6 +16,8 @@ import {
   validateSuggestionContextResponse
 } from "./validators.js";
 
+const chrome = globalThis.chrome ?? globalThis.browser;
+
 export async function ensureDefaultSettings() {
   const data = await chrome.storage.local.get(STORE_KEYS.SETTINGS);
   if (data[STORE_KEYS.SETTINGS]) return;
@@ -31,6 +33,8 @@ export async function ensureDefaultSettings() {
 }
 
 export async function registerContextMenus() {
+  if (!chrome?.contextMenus?.create || !chrome?.contextMenus?.removeAll) return;
+
   await chrome.contextMenus.removeAll();
   chrome.contextMenus.create({ id: MENU_IDS.SHADOW_ME, title: "LinkNest: Shadow Me", contexts: ["page"], documentUrlPatterns: ["https://www.linkedin.com/feed/*"] });
   chrome.contextMenus.create({ id: MENU_IDS.SUGGEST_RESPONSE, title: "LinkNest: Suggest a Response", contexts: ["selection", "page"], documentUrlPatterns: ["https://www.linkedin.com/feed/*"] });
@@ -39,6 +43,8 @@ export async function registerContextMenus() {
 }
 
 export async function refreshMenusForTab(tabId) {
+  if (!chrome?.tabs?.get) return;
+
   const tab = await chrome.tabs.get(tabId);
   if (!tab?.url?.includes("linkedin.com")) return;
   await recalculateUnreadCount();
