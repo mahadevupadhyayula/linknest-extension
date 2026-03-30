@@ -1,23 +1,35 @@
 let shadowIntervalId = null;
 
+const validators = {
+  LN_EXTRACT_PROFILE_MINIMAL: (payload) => payload == null,
+  LN_CAPTURE_SUGGESTION_CONTEXT: (payload) => payload == null,
+  LN_START_SHADOW: (payload) => payload && typeof payload.mode === "string",
+  LN_STOP_SHADOW: (payload) => payload == null
+};
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === "LN_EXTRACT_PROFILE_MINIMAL") {
+  if (!message || typeof message.type !== "string" || !validators[message.type] || !validators[message.type](message.payload)) {
+    sendResponse({ ok: false, error: "Invalid internal message payload." });
+    return false;
+  }
+
+  if (message.type === "LN_EXTRACT_PROFILE_MINIMAL") {
     sendResponse(extractProfileMinimal());
     return true;
   }
 
-  if (message?.type === "LN_CAPTURE_SUGGESTION_CONTEXT") {
+  if (message.type === "LN_CAPTURE_SUGGESTION_CONTEXT") {
     sendResponse(extractSuggestionContextFromSelection());
     return true;
   }
 
-  if (message?.type === "LN_START_SHADOW") {
+  if (message.type === "LN_START_SHADOW") {
     startShadowMode(message.payload);
     sendResponse({ ok: true });
     return true;
   }
 
-  if (message?.type === "LN_STOP_SHADOW") {
+  if (message.type === "LN_STOP_SHADOW") {
     stopShadowMode();
     sendResponse({ ok: true });
     return true;
@@ -118,8 +130,6 @@ function extractVisibleFeedAuthors() {
     const displayName = anchor?.textContent?.trim() || "Unknown";
     const profileUrl = anchor?.href || "";
 
-    // Placeholder target match strategy:
-    // In implementation, load real local target cache for matching.
     const isTarget = false;
     const fingerprint = `${profileUrl || displayName}_${index}`;
 
