@@ -1,4 +1,11 @@
-import { applyDeltaSync, normalizeLinkedInProfileUrl, upsertLocalTarget } from "./lib/stores/targetsStore.js";
+import {
+  applyDeltaSync,
+  getTargetsCacheState,
+  normalizeLinkedInProfileUrl,
+  replaceAllTargets,
+  upsertLocalTarget
+} from "./lib/stores/targetsStore.js";
+import { runDeltaSync as runSyncManager } from "./lib/sync/syncManager.js";
 
 const MENU_IDS = {
   SHADOW_ME: "ln_shadow_me",
@@ -15,24 +22,43 @@ const STORE_KEYS = {
   BACKEND_STATUS: "ln_backend_status",
   UNREAD_COUNT: "ln_unread_count",
   RECENT_FINGERPRINTS: "ln_recent_fingerprints",
-  RECENT_TARGET_ADD: "ln_recent_target_add"
+  RECENT_TARGET_ADD: "ln_recent_target_add",
+  TARGET_WRITE_QUEUE: "ln_target_write_queue",
+  INTERACTION_WRITE_QUEUE: "ln_interaction_write_queue"
 };
 
 const ALARM_IDS = {
   REMINDERS: "ln_poll_reminders",
-  TARGET_SYNC: "ln_targets_delta_sync"
+  TARGET_SYNC: "ln_targets_delta_sync",
+  WRITE_FLUSH: "ln_write_flush"
 };
+
+const CACHE_LIMITS = {
+  EVENTS: 100,
+  RECENT_FINGERPRINTS: 500,
+  RECENT_TARGET_ADD: 200
+};
+
+const CACHE_TTL_MS = {
+  RECENT_FINGERPRINTS: 5 * 60 * 1000,
+  RECENT_TARGET_ADD: 30 * 1000,
+  TARGET_CACHE_STALE: 5 * 60 * 1000
+};
+
+const WRITE_BACKOFF_MS = [5_000, 30_000, 2 * 60_000, 10 * 60_000];
 
 chrome.runtime.onInstalled.addListener(async () => {
   await ensureDefaultSettings();
   await registerContextMenus();
   await recalculateUnreadCount();
   scheduleBackgroundSync();
+  await flushWriteQueues();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   void recalculateUnreadCount();
   scheduleBackgroundSync();
+  void flushWriteQueues();
 });
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
@@ -78,7 +104,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message?.type === "LN_INTERACTION_LOG") {
-      await logInteractionBatch({ events: [message.payload] });
+      await enqueueInteractionWrite(message.payload);
       sendResponse({ ok: true });
       return;
     }
@@ -131,13 +157,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message?.type === "LN_POPUP_REFRESH_TARGETS") {
-      await syncTargetsDelta();
+      await runTargetSync("manual_popup_refresh");
       const metaData = await chrome.storage.local.get([STORE_KEYS.SYNC_META, STORE_KEYS.BACKEND_STATUS]);
       sendResponse({
         ok: true,
         syncMeta: metaData[STORE_KEYS.SYNC_META] ?? { lastSyncAt: null },
         backendStatus: metaData[STORE_KEYS.BACKEND_STATUS] ?? {}
       });
+      return;
+    }
+
+    if (message?.type === "LN_TARGETS_GET_SWR") {
+      const cache = await getTargetsWithStaleWhileRevalidate();
+      sendResponse({ ok: true, ...cache });
       return;
     }
 
@@ -161,7 +193,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 
   if (alarm.name === ALARM_IDS.TARGET_SYNC) {
-    await syncTargetsDelta();
+    await runTargetSync("alarm");
+  }
+
+  if (alarm.name === ALARM_IDS.WRITE_FLUSH) {
+    await flushWriteQueues();
   }
 });
 
@@ -276,7 +312,7 @@ async function addTargetFromProfile(tabId) {
   }
 
   try {
-    const apiResult = await upsertTarget({
+    const apiResult = await enqueueTargetWrite({
       profile_url: normalized.profileUrl,
       display_name: profile?.displayName,
       headline: profile?.headline,
@@ -343,6 +379,7 @@ async function handleTargetDetected(payload) {
 async function scheduleBackgroundSync() {
   chrome.alarms.create(ALARM_IDS.REMINDERS, { periodInMinutes: 20 });
   chrome.alarms.create(ALARM_IDS.TARGET_SYNC, { periodInMinutes: 10 });
+  chrome.alarms.create(ALARM_IDS.WRITE_FLUSH, { periodInMinutes: 1 });
 }
 
 async function getEvents() {
@@ -352,7 +389,10 @@ async function getEvents() {
 
 async function enqueueEvent(event) {
   const events = await getEvents();
-  const next = [{ id: crypto.randomUUID(), createdAt: new Date().toISOString(), ...event }, ...events].slice(0, 100);
+  const next = [{ id: crypto.randomUUID(), createdAt: new Date().toISOString(), ...event }, ...events].slice(
+    0,
+    CACHE_LIMITS.EVENTS
+  );
   await chrome.storage.local.set({ [STORE_KEYS.EVENTS]: next });
   await recalculateUnreadCount(next);
 }
@@ -419,51 +459,192 @@ async function notify(title, message) {
 }
 
 async function isRecentTargetAdd(profileSlug) {
-  const data = await chrome.storage.local.get(STORE_KEYS.RECENT_TARGET_ADD);
-  const map = data[STORE_KEYS.RECENT_TARGET_ADD] ?? {};
+  const map = await readAndPruneTimestampCache(STORE_KEYS.RECENT_TARGET_ADD, {
+    ttlMs: CACHE_TTL_MS.RECENT_TARGET_ADD,
+    maxEntries: CACHE_LIMITS.RECENT_TARGET_ADD
+  });
   const ts = map[profileSlug];
-  return Boolean(ts && Date.now() - ts < 30 * 1000);
+  return Boolean(ts && Date.now() - ts < CACHE_TTL_MS.RECENT_TARGET_ADD);
 }
 
 async function markRecentTargetAdd(profileSlug) {
-  const data = await chrome.storage.local.get(STORE_KEYS.RECENT_TARGET_ADD);
-  const map = data[STORE_KEYS.RECENT_TARGET_ADD] ?? {};
+  const map = await readAndPruneTimestampCache(STORE_KEYS.RECENT_TARGET_ADD, {
+    ttlMs: CACHE_TTL_MS.RECENT_TARGET_ADD,
+    maxEntries: CACHE_LIMITS.RECENT_TARGET_ADD
+  });
   map[profileSlug] = Date.now();
-  await chrome.storage.local.set({ [STORE_KEYS.RECENT_TARGET_ADD]: map });
+  await chrome.storage.local.set({
+    [STORE_KEYS.RECENT_TARGET_ADD]: enforceTimestampCacheLimits(map, {
+      ttlMs: CACHE_TTL_MS.RECENT_TARGET_ADD,
+      maxEntries: CACHE_LIMITS.RECENT_TARGET_ADD
+    })
+  });
 }
 
 async function getRecentDetectionFingerprint(fingerprint) {
   if (!fingerprint) return false;
-  const data = await chrome.storage.local.get(STORE_KEYS.RECENT_FINGERPRINTS);
-  const map = data[STORE_KEYS.RECENT_FINGERPRINTS] ?? {};
+  const map = await readAndPruneTimestampCache(STORE_KEYS.RECENT_FINGERPRINTS, {
+    ttlMs: CACHE_TTL_MS.RECENT_FINGERPRINTS,
+    maxEntries: CACHE_LIMITS.RECENT_FINGERPRINTS
+  });
   const ts = map[fingerprint];
   if (!ts) return false;
-  return Date.now() - ts < 5 * 60 * 1000;
+  return Date.now() - ts < CACHE_TTL_MS.RECENT_FINGERPRINTS;
 }
 
 async function markRecentDetectionFingerprint(fingerprint) {
   if (!fingerprint) return;
-  const data = await chrome.storage.local.get(STORE_KEYS.RECENT_FINGERPRINTS);
-  const map = data[STORE_KEYS.RECENT_FINGERPRINTS] ?? {};
+  const map = await readAndPruneTimestampCache(STORE_KEYS.RECENT_FINGERPRINTS, {
+    ttlMs: CACHE_TTL_MS.RECENT_FINGERPRINTS,
+    maxEntries: CACHE_LIMITS.RECENT_FINGERPRINTS
+  });
   map[fingerprint] = Date.now();
-  await chrome.storage.local.set({ [STORE_KEYS.RECENT_FINGERPRINTS]: map });
+  await chrome.storage.local.set({
+    [STORE_KEYS.RECENT_FINGERPRINTS]: enforceTimestampCacheLimits(map, {
+      ttlMs: CACHE_TTL_MS.RECENT_FINGERPRINTS,
+      maxEntries: CACHE_LIMITS.RECENT_FINGERPRINTS
+    })
+  });
 }
 
-async function syncTargetsDelta() {
-  const metaData = await chrome.storage.local.get(STORE_KEYS.SYNC_META);
-  const meta = metaData[STORE_KEYS.SYNC_META] ?? { lastSyncAt: null };
+async function runTargetSync(trigger = "background") {
+  const result = await runSyncManager({
+    syncDelta: syncTargetsDeltaApi,
+    syncFull: syncTargetsFullApi,
+    applyDelta: applyDeltaSync,
+    applyFull: replaceAllTargets,
+    metaKey: STORE_KEYS.SYNC_META
+  });
 
-  const result = await syncTargetsDeltaApi({ updated_since: meta.lastSyncAt });
-  if (Array.isArray(result.changes)) {
-    await applyDeltaSync(result.changes);
+  if (!result.ok) {
+    await enqueueEvent({
+      type: "target_sync_failed",
+      message: "Target sync failed. Will retry automatically with backoff/fallback.",
+      payload: {
+        trigger,
+        mode: result.mode,
+        failCount: result.meta?.failCount ?? 0,
+        error: result.error instanceof Error ? result.error.message : String(result.error)
+      }
+    });
   }
 
-  await chrome.storage.local.set({
-    [STORE_KEYS.SYNC_META]: {
-      ...meta,
-      lastSyncAt: new Date().toISOString()
-    }
+  return result;
+}
+
+async function getTargetsWithStaleWhileRevalidate() {
+  const cache = await getTargetsCacheState(CACHE_TTL_MS.TARGET_CACHE_STALE);
+  if (cache.stale) {
+    void runTargetSync("stale_while_revalidate");
+  }
+
+  return cache;
+}
+
+async function enqueueTargetWrite(payload) {
+  const result = await processWriteWithQueue({
+    queueKey: STORE_KEYS.TARGET_WRITE_QUEUE,
+    payload,
+    executor: upsertTarget
   });
+
+  if (!result.ok && !result.queued) {
+    throw result.error ?? new Error("Failed to persist target write.");
+  }
+
+  return result.value ?? { target_id: payload.profile_url, status: "queued" };
+}
+
+async function enqueueInteractionWrite(event) {
+  return processWriteWithQueue({
+    queueKey: STORE_KEYS.INTERACTION_WRITE_QUEUE,
+    payload: event,
+    executor: async (queuedEvent) => logInteractionBatch({ events: [queuedEvent] })
+  });
+}
+
+async function flushWriteQueues() {
+  await flushQueue(STORE_KEYS.TARGET_WRITE_QUEUE, upsertTarget);
+  await flushQueue(STORE_KEYS.INTERACTION_WRITE_QUEUE, async (event) => logInteractionBatch({ events: [event] }));
+}
+
+async function processWriteWithQueue({ queueKey, payload, executor }) {
+  const queueData = await chrome.storage.local.get(queueKey);
+  const queue = queueData[queueKey] ?? [];
+  const now = Date.now();
+  const firstPending = queue[0];
+  const canAttemptNow = !firstPending?.nextRetryAt || firstPending.nextRetryAt <= now;
+
+  if (!canAttemptNow) {
+    queue.push(createQueuedWrite(payload));
+    await chrome.storage.local.set({ [queueKey]: queue });
+    return { ok: false, queued: true, error: new Error("Write deferred due to backoff window.") };
+  }
+
+  try {
+    const value = await executor(payload);
+    if (queue.length) {
+      queue.push(createQueuedWrite(payload));
+      await chrome.storage.local.set({ [queueKey]: queue });
+      await flushQueue(queueKey, executor);
+    }
+    return { ok: true, queued: false, value };
+  } catch (error) {
+    queue.push(createQueuedWrite(payload, error));
+    await chrome.storage.local.set({ [queueKey]: queue });
+    return { ok: false, queued: true, error };
+  }
+}
+
+async function flushQueue(queueKey, executor) {
+  const queueData = await chrome.storage.local.get(queueKey);
+  const queue = queueData[queueKey] ?? [];
+  if (!queue.length) return;
+
+  const now = Date.now();
+  const remaining = [];
+
+  for (const entry of queue) {
+    if (entry.nextRetryAt && entry.nextRetryAt > now) {
+      remaining.push(entry);
+      continue;
+    }
+
+    try {
+      await executor(entry.payload);
+    } catch (error) {
+      remaining.push(createQueuedWrite(entry.payload, error, entry.attemptCount ?? 0));
+    }
+  }
+
+  await chrome.storage.local.set({ [queueKey]: remaining });
+}
+
+function createQueuedWrite(payload, error = null, priorAttempts = 0) {
+  const attemptCount = priorAttempts + 1;
+  const backoff = WRITE_BACKOFF_MS[Math.min(attemptCount - 1, WRITE_BACKOFF_MS.length - 1)];
+  return {
+    id: crypto.randomUUID(),
+    payload,
+    attemptCount,
+    queuedAt: Date.now(),
+    nextRetryAt: Date.now() + backoff,
+    lastError: error instanceof Error ? error.message : error ? String(error) : null
+  };
+}
+
+async function readAndPruneTimestampCache(key, options) {
+  const data = await chrome.storage.local.get(key);
+  const cleaned = enforceTimestampCacheLimits(data[key] ?? {}, options);
+  await chrome.storage.local.set({ [key]: cleaned });
+  return cleaned;
+}
+
+function enforceTimestampCacheLimits(map, { ttlMs, maxEntries }) {
+  const now = Date.now();
+  const entries = Object.entries(map ?? {}).filter(([, ts]) => Number.isFinite(ts) && now - ts <= ttlMs);
+  entries.sort((a, b) => b[1] - a[1]);
+  return Object.fromEntries(entries.slice(0, maxEntries));
 }
 
 /**
@@ -516,6 +697,10 @@ async function logInteractionBatch(payload) {
 
 async function syncTargetsDeltaApi() {
   return withBackendRetry("sync_targets_delta", async () => ({ changes: [] }));
+}
+
+async function syncTargetsFullApi() {
+  return withBackendRetry("sync_targets_full", async () => ({ targets: [] }));
 }
 
 async function withBackendRetry(action, task, attempts = 2) {
