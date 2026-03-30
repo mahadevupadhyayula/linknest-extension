@@ -2,7 +2,20 @@
  * Placeholder backend client contracts for extension development.
  * Swap mocked bodies with real fetch calls when backend is available.
  */
+export const BACKEND_ENDPOINTS = {
+  upsertTarget: { method: "POST", path: "/api/targets/upsert" },
+  syncTargetsDelta: { method: "POST", path: "/api/targets/sync/delta" },
+  startShadowSession: { method: "POST", path: "/api/shadow/sessions" },
+  logTargetDetection: { method: "POST", path: "/api/shadow/detections" },
+  generateResponseSuggestion: { method: "POST", path: "/api/suggestions/generate" },
+  fetchFollowupReminders: { method: "GET", path: "/api/reminders/followups" },
+  logInteractionBatch: { method: "POST", path: "/api/interactions/batch" },
+  ackNotification: { method: "POST", path: "/api/notifications/ack" }
+};
 
+/**
+ * Planned backend endpoint: POST /api/targets/upsert
+ */
 export async function upsertTarget(payload) {
   return {
     status: "added",
@@ -11,6 +24,9 @@ export async function upsertTarget(payload) {
   };
 }
 
+/**
+ * Planned backend endpoint: POST /api/targets/sync/delta
+ */
 export async function syncTargetsDelta(payload) {
   return {
     updated_since: payload.updated_since ?? null,
@@ -18,6 +34,9 @@ export async function syncTargetsDelta(payload) {
   };
 }
 
+/**
+ * Planned backend endpoint: POST /api/shadow/sessions
+ */
 export async function startShadowSession(payload) {
   return {
     session_id: crypto.randomUUID(),
@@ -26,6 +45,9 @@ export async function startShadowSession(payload) {
   };
 }
 
+/**
+ * Planned backend endpoint: POST /api/shadow/detections
+ */
 export async function logTargetDetection(payload) {
   return {
     status: "logged",
@@ -33,6 +55,9 @@ export async function logTargetDetection(payload) {
   };
 }
 
+/**
+ * Planned backend endpoint: POST /api/suggestions/generate
+ */
 export async function generateResponseSuggestion(payload) {
   return {
     suggestions: [
@@ -45,6 +70,9 @@ export async function generateResponseSuggestion(payload) {
   };
 }
 
+/**
+ * Planned backend endpoint: GET /api/reminders/followups
+ */
 export async function fetchFollowupReminders(payload) {
   return {
     since: payload.since ?? null,
@@ -52,6 +80,9 @@ export async function fetchFollowupReminders(payload) {
   };
 }
 
+/**
+ * Planned backend endpoint: POST /api/interactions/batch
+ */
 export async function logInteractionBatch(payload) {
   return {
     accepted_count: payload.events?.length ?? 0,
@@ -59,6 +90,9 @@ export async function logInteractionBatch(payload) {
   };
 }
 
+/**
+ * Planned backend endpoint: POST /api/notifications/ack
+ */
 export async function ackNotification(payload) {
   return {
     status: "ok",

@@ -18,6 +18,9 @@ import {
 
 const chrome = globalThis.chrome ?? globalThis.browser;
 
+/**
+ * Initialize extension settings once so downstream reads always have defaults.
+ */
 export async function ensureDefaultSettings() {
   const data = await chrome.storage.local.get(STORE_KEYS.SETTINGS);
   if (data[STORE_KEYS.SETTINGS]) return;
@@ -32,6 +35,9 @@ export async function ensureDefaultSettings() {
   });
 }
 
+/**
+ * Rebuild all context menus to ensure they match the current extension version.
+ */
 export async function registerContextMenus() {
   if (!chrome?.contextMenus?.create || !chrome?.contextMenus?.removeAll) return;
 
@@ -42,6 +48,9 @@ export async function registerContextMenus() {
   chrome.contextMenus.create({ id: MENU_IDS.ANALYZE_PROFILE_MATCH, title: "LinkNest: Analyze Profile Match (Future)", contexts: ["page"], documentUrlPatterns: ["https://www.linkedin.com/in/*"] });
 }
 
+/**
+ * When the active tab changes, recalculate badge state for LinkedIn tabs only.
+ */
 export async function refreshMenusForTab(tabId) {
   if (!chrome?.tabs?.get) return;
 
@@ -50,12 +59,18 @@ export async function refreshMenusForTab(tabId) {
   await recalculateUnreadCount();
 }
 
+/**
+ * Lightweight URL-to-context classifier used by telemetry and future branching logic.
+ */
 export function getPageContext(url) {
   if (/linkedin\.com\/feed/.test(url)) return "feed";
   if (/linkedin\.com\/in\//.test(url)) return "profile";
   return "none";
 }
 
+/**
+ * Persist session state, notify the user, and start content-script shadow mode.
+ */
 export async function startShadowSession(tabId, apis) {
   const session = { startedAt: new Date().toISOString(), mode: "name_only", active: true, tabId };
   await chrome.storage.local.set({ [STORE_KEYS.SESSION]: session });
@@ -65,6 +80,9 @@ export async function startShadowSession(tabId, apis) {
   await apis.startShadowSessionApi({ started_at: session.startedAt, mode: session.mode });
 }
 
+/**
+ * Capture selected context from the tab, request a generated response, and emit result events.
+ */
 export async function requestSuggestion(tabId, apis) {
   await recordSuggestTelemetry("requests");
   try {
@@ -87,6 +105,9 @@ export async function requestSuggestion(tabId, apis) {
   }
 }
 
+/**
+ * Resolve the current active LinkedIn tab and proxy suggestion generation through it.
+ */
 export async function requestSuggestionFromActiveTab(source, apis) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id || !tab.url?.includes("linkedin.com")) {
@@ -97,6 +118,9 @@ export async function requestSuggestionFromActiveTab(source, apis) {
   return requestSuggestion(tab.id, apis);
 }
 
+/**
+ * Extract and normalize profile details from a tab, then upsert both remote and local target records.
+ */
 export async function addTargetFromProfile(tabId, apis) {
   const profile = await chrome.tabs.sendMessage(tabId, { type: "LN_EXTRACT_PROFILE_MINIMAL" });
   if (!validateProfileResponse(profile)) throw new Error("Invalid profile payload received from content script.");
@@ -124,6 +148,9 @@ export async function addTargetFromProfile(tabId, apis) {
   }
 }
 
+/**
+ * Handle detected-target events with fingerprint dedupe and user-facing notifications.
+ */
 export async function handleTargetDetected(payload, apis) {
   const recent = await getRecentDetectionFingerprint(payload?.fingerprint);
   if (recent) return;
@@ -134,6 +161,9 @@ export async function handleTargetDetected(payload, apis) {
   await apis.logTargetDetection(payload);
 }
 
+/**
+ * Primary runtime message router shared by popup and content scripts.
+ */
 export async function handleRuntimeMessage(message, apis) {
   if (message.type === "LN_TARGET_DETECTED") {
     await handleTargetDetected(message.payload, apis);
@@ -200,6 +230,9 @@ export async function handleRuntimeMessage(message, apis) {
   return { ok: false };
 }
 
+/**
+ * Retry any queued writes that previously failed due to transient backend/network issues.
+ */
 export async function flushWriteQueues(apis) {
   await flushQueue(STORE_KEYS.TARGET_WRITE_QUEUE, apis.upsertTarget);
   const settings = await getSettings();
@@ -210,12 +243,18 @@ export async function flushWriteQueues(apis) {
   }
 }
 
+/**
+ * Queue-aware write helper for target upserts.
+ */
 async function enqueueTargetWrite(payload, apis) {
   const result = await processWriteWithQueue({ queueKey: STORE_KEYS.TARGET_WRITE_QUEUE, payload, executor: apis.upsertTarget });
   if (!result.ok && !result.queued) throw result.error ?? new Error("Failed to persist target write.");
   return result.value ?? { target_id: payload.profile_url, status: "queued" };
 }
 
+/**
+ * Queue-aware write helper for interaction logs (batch-capable API shape).
+ */
 async function enqueueInteractionWrite(event, apis) {
   const normalized = normalizeInteractionEvent(event);
   if (!normalized) return { ok: false, queued: false, error: new Error("Invalid interaction payload.") };
@@ -223,6 +262,9 @@ async function enqueueInteractionWrite(event, apis) {
   return processWriteWithQueue({ queueKey: STORE_KEYS.INTERACTION_WRITE_QUEUE, payload: normalized, executor: async (eventsOrEvent) => apis.logInteractionBatch({ events: Array.isArray(eventsOrEvent) ? eventsOrEvent : [eventsOrEvent] }) });
 }
 
+/**
+ * Optimistically attempt an immediate write; enqueue and back off on failure.
+ */
 async function processWriteWithQueue({ queueKey, payload, executor }) {
   const queueData = await chrome.storage.local.get(queueKey);
   const queue = queueData[queueKey] ?? [];
@@ -251,6 +293,9 @@ async function processWriteWithQueue({ queueKey, payload, executor }) {
   }
 }
 
+/**
+ * Drain queued writes that are eligible to retry, preserving deferred entries.
+ */
 async function flushQueue(queueKey, executor, options = {}) {
   const queueData = await chrome.storage.local.get(queueKey);
   const queue = queueData[queueKey] ?? [];
@@ -285,6 +330,9 @@ async function flushQueue(queueKey, executor, options = {}) {
   await chrome.storage.local.set({ [queueKey]: remaining });
 }
 
+/**
+ * Read settings with hardcoded defaults so missing keys never break logic paths.
+ */
 async function getSettings() {
   const data = await chrome.storage.local.get(STORE_KEYS.SETTINGS);
   return {
@@ -296,12 +344,18 @@ async function getSettings() {
   };
 }
 
+/**
+ * Wrap a payload in queue metadata (attempt count, backoff, timing, last error).
+ */
 function createQueuedWrite(payload, error = null, priorAttempts = 0) {
   const attemptCount = priorAttempts + 1;
   const backoff = WRITE_BACKOFF_MS[Math.min(attemptCount - 1, WRITE_BACKOFF_MS.length - 1)];
   return { id: crypto.randomUUID(), payload, attemptCount, queuedAt: Date.now(), nextRetryAt: Date.now() + backoff, lastError: error instanceof Error ? error.message : error ? String(error) : null };
 }
 
+/**
+ * Read a timestamp cache map, prune stale entries, and persist the cleaned version.
+ */
 async function readAndPruneTimestampCache(key, options) {
   const data = await chrome.storage.local.get(key);
   const cleaned = enforceTimestampCacheLimits(data[key] ?? {}, options);
@@ -309,6 +363,9 @@ async function readAndPruneTimestampCache(key, options) {
   return cleaned;
 }
 
+/**
+ * Enforce TTL and max-size constraints on timestamp maps used for dedupe throttling.
+ */
 function enforceTimestampCacheLimits(map, { ttlMs, maxEntries }) {
   const now = Date.now();
   const entries = Object.entries(map ?? {}).filter(([, ts]) => Number.isFinite(ts) && now - ts <= ttlMs);
@@ -316,18 +373,27 @@ function enforceTimestampCacheLimits(map, { ttlMs, maxEntries }) {
   return Object.fromEntries(entries.slice(0, maxEntries));
 }
 
+/**
+ * Check whether a profile was recently added, preventing rapid duplicate writes.
+ */
 async function isRecentTargetAdd(profileSlug) {
   const map = await readAndPruneTimestampCache(STORE_KEYS.RECENT_TARGET_ADD, { ttlMs: CACHE_TTL_MS.RECENT_TARGET_ADD, maxEntries: CACHE_LIMITS.RECENT_TARGET_ADD });
   const ts = map[profileSlug];
   return Boolean(ts && Date.now() - ts < CACHE_TTL_MS.RECENT_TARGET_ADD);
 }
 
+/**
+ * Mark profile slug as recently added for short-lived duplicate prevention.
+ */
 async function markRecentTargetAdd(profileSlug) {
   const map = await readAndPruneTimestampCache(STORE_KEYS.RECENT_TARGET_ADD, { ttlMs: CACHE_TTL_MS.RECENT_TARGET_ADD, maxEntries: CACHE_LIMITS.RECENT_TARGET_ADD });
   map[profileSlug] = Date.now();
   await chrome.storage.local.set({ [STORE_KEYS.RECENT_TARGET_ADD]: enforceTimestampCacheLimits(map, { ttlMs: CACHE_TTL_MS.RECENT_TARGET_ADD, maxEntries: CACHE_LIMITS.RECENT_TARGET_ADD }) });
 }
 
+/**
+ * Check whether a detection fingerprint was recently observed.
+ */
 async function getRecentDetectionFingerprint(fingerprint) {
   if (!fingerprint) return false;
   const map = await readAndPruneTimestampCache(STORE_KEYS.RECENT_FINGERPRINTS, { ttlMs: CACHE_TTL_MS.RECENT_FINGERPRINTS, maxEntries: CACHE_LIMITS.RECENT_FINGERPRINTS });
@@ -335,6 +401,9 @@ async function getRecentDetectionFingerprint(fingerprint) {
   return Boolean(ts && Date.now() - ts < CACHE_TTL_MS.RECENT_FINGERPRINTS);
 }
 
+/**
+ * Record a detection fingerprint with TTL so repeated scans do not spam users.
+ */
 async function markRecentDetectionFingerprint(fingerprint) {
   if (!fingerprint) return;
   const map = await readAndPruneTimestampCache(STORE_KEYS.RECENT_FINGERPRINTS, { ttlMs: CACHE_TTL_MS.RECENT_FINGERPRINTS, maxEntries: CACHE_LIMITS.RECENT_FINGERPRINTS });
@@ -342,6 +411,9 @@ async function markRecentDetectionFingerprint(fingerprint) {
   await chrome.storage.local.set({ [STORE_KEYS.RECENT_FINGERPRINTS]: enforceTimestampCacheLimits(map, { ttlMs: CACHE_TTL_MS.RECENT_FINGERPRINTS, maxEntries: CACHE_LIMITS.RECENT_FINGERPRINTS }) });
 }
 
+/**
+ * Increment suggestion request telemetry counters for popup analytics/debugging.
+ */
 async function recordSuggestTelemetry(counter) {
   const data = await chrome.storage.local.get(STORE_KEYS.SUGGEST_TELEMETRY);
   const current = data[STORE_KEYS.SUGGEST_TELEMETRY] ?? { requests: 0, success: 0, errors: 0 };

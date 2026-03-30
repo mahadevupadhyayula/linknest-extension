@@ -1,5 +1,8 @@
 let shadowIntervalId = null;
 
+/**
+ * Message-level payload validators for internal background/content communication.
+ */
 const validators = {
   LN_EXTRACT_PROFILE_MINIMAL: (payload) => payload == null,
   LN_CAPTURE_SUGGESTION_CONTEXT: (payload) => payload == null,
@@ -7,6 +10,9 @@ const validators = {
   LN_STOP_SHADOW: (payload) => payload == null
 };
 
+/**
+ * Central listener for background script requests handled inside LinkedIn pages.
+ */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== "string" || !validators[message.type] || !validators[message.type](message.payload)) {
     sendResponse({ ok: false, error: "Invalid internal message payload." });
@@ -39,6 +45,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
+/**
+ * Normalize a LinkedIn profile URL into a canonical profile slug + URL pair.
+ */
 function normalizeLinkedInProfileUrl(rawUrl) {
   if (typeof rawUrl !== "string" || !rawUrl.trim()) return null;
 
@@ -64,6 +73,9 @@ function normalizeLinkedInProfileUrl(rawUrl) {
   };
 }
 
+/**
+ * Scrape lightweight profile fields from a LinkedIn profile page.
+ */
 function extractProfileMinimal() {
   const normalized = normalizeLinkedInProfileUrl(window.location.href);
   const displayName = document.querySelector("h1")?.textContent?.trim() || "Unknown";
@@ -77,6 +89,9 @@ function extractProfileMinimal() {
   };
 }
 
+/**
+ * Pull selected text and return a bounded context payload for suggestion generation.
+ */
 function extractSuggestionContextFromSelection() {
   const MAX_CONTEXT_CHARS = 600;
   const selection = window.getSelection()?.toString() ?? "";
@@ -93,6 +108,9 @@ function extractSuggestionContextFromSelection() {
   };
 }
 
+/**
+ * Begin interval scanning for visible feed cards and emit detection events.
+ */
 function startShadowMode({ mode }) {
   if (mode !== "name_only") return;
   stopShadowMode();
@@ -115,12 +133,18 @@ function startShadowMode({ mode }) {
   }, 1000);
 }
 
+/**
+ * Stop ongoing shadow scanning interval, if active.
+ */
 function stopShadowMode() {
   if (!shadowIntervalId) return;
   window.clearInterval(shadowIntervalId);
   shadowIntervalId = null;
 }
 
+/**
+ * Collect visible feed author candidates and create stable fingerprints per card.
+ */
 function extractVisibleFeedAuthors() {
   const cards = Array.from(document.querySelectorAll("div.feed-shared-update-v2"));
   const visibleCards = cards.filter(isElementInViewport).slice(0, 12);
@@ -137,6 +161,9 @@ function extractVisibleFeedAuthors() {
   });
 }
 
+/**
+ * Viewport check used to ignore off-screen feed cards.
+ */
 function isElementInViewport(el) {
   const rect = el.getBoundingClientRect();
   return rect.top < window.innerHeight && rect.bottom > 0;
