@@ -27,12 +27,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
+function normalizeLinkedInProfileUrl(rawUrl) {
+  if (typeof rawUrl !== "string" || !rawUrl.trim()) return null;
+
+  let parsed;
+  try {
+    parsed = new URL(rawUrl.trim());
+  } catch {
+    return null;
+  }
+
+  if (parsed.hostname !== "www.linkedin.com") return null;
+
+  const cleanPath = parsed.pathname.replace(/\/+$/, "");
+  const match = cleanPath.match(/^\/in\/([A-Za-z0-9-_%]+)$/);
+  if (!match) return null;
+
+  const profileSlug = decodeURIComponent(match[1]).toLowerCase();
+  if (!profileSlug) return null;
+
+  return {
+    profileUrl: `https://www.linkedin.com/in/${encodeURIComponent(profileSlug)}`,
+    profileSlug
+  };
+}
+
 function extractProfileMinimal() {
+  const normalized = normalizeLinkedInProfileUrl(window.location.href);
   const displayName = document.querySelector("h1")?.textContent?.trim() || "Unknown";
   const headline = document.querySelector(".text-body-medium")?.textContent?.trim() || "";
 
   return {
-    profileUrl: window.location.href,
+    profileUrl: normalized?.profileUrl ?? null,
+    profileSlug: normalized?.profileSlug ?? null,
     displayName,
     headline
   };

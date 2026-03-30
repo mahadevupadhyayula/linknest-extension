@@ -1,3 +1,5 @@
+import { applyDeltaSync, normalizeLinkedInProfileUrl, upsertLocalTarget } from "./lib/stores/targetsStore.js";
+
 const MENU_IDS = {
   SHADOW_ME: "ln_shadow_me",
   SUGGEST_RESPONSE: "ln_suggest_response",
@@ -6,11 +8,12 @@ const MENU_IDS = {
 };
 
 const STORE_KEYS = {
-  TARGETS: "ln_targets",
   EVENTS: "ln_events",
   SETTINGS: "ln_settings",
   SESSION: "ln_shadow_session",
-  SYNC_META: "ln_sync_meta"
+  SYNC_META: "ln_sync_meta",
+  RECENT_FINGERPRINTS: "ln_recent_fingerprints",
+  RECENT_TARGET_ADD: "ln_recent_target_add"
 };
 
 const ALARM_IDS = {
@@ -203,29 +206,70 @@ async function requestSuggestion(tabId) {
 
 async function addTargetFromProfile(tabId) {
   const profile = await chrome.tabs.sendMessage(tabId, { type: "LN_EXTRACT_PROFILE_MINIMAL" });
-  if (!profile?.profileUrl) {
+  const normalized = normalizeLinkedInProfileUrl(profile?.profileUrl);
+  if (!normalized) {
+    await enqueueEvent({
+      type: "target_added_failed",
+      message: "Could not add target: invalid LinkedIn profile URL.",
+      payload: { reason: "invalid_profile_url", rawProfileUrl: profile?.profileUrl ?? null }
+    });
     await notify("LinkNest", "Could not extract profile details.");
     return;
   }
 
-  const apiResult = await upsertTarget({
-    profile_url: profile.profileUrl,
-    display_name: profile.displayName,
-    headline: profile.headline,
-    source: "linkedin_profile",
-    captured_at: new Date().toISOString()
-  });
+  if (await isRecentTargetAdd(normalized.profileSlug)) {
+    return;
+  }
 
-  await upsertLocalTarget({
-    targetId: apiResult.target_id,
-    profileUrl: profile.profileUrl,
-    displayName: profile.displayName,
-    headline: profile.headline,
-    updatedAt: new Date().toISOString()
-  });
+  try {
+    const apiResult = await upsertTarget({
+      profile_url: normalized.profileUrl,
+      display_name: profile?.displayName,
+      headline: profile?.headline,
+      source: "linkedin_profile",
+      captured_at: new Date().toISOString()
+    });
 
-  await enqueueEvent({ type: "target_added", message: `${profile.displayName} added to target list.` });
-  await notify("LinkNest", `${profile.displayName} added to target list.`);
+    const { target, isNew } = await upsertLocalTarget({
+      targetId: apiResult.target_id,
+      profileUrl: normalized.profileUrl,
+      displayName: profile?.displayName,
+      headline: profile?.headline,
+      source: "linkedin_profile",
+      status: "active",
+      capturedAt: new Date().toISOString()
+    });
+
+    await markRecentTargetAdd(normalized.profileSlug);
+
+    const message = isNew
+      ? `${target.displayName} added to target list.`
+      : `${target.displayName} is already in your target list.`;
+
+    await enqueueEvent({
+      type: "target_added_success",
+      message,
+      payload: {
+        targetId: target.targetId,
+        profileUrl: target.profileUrl,
+        profileSlug: target.profileSlug,
+        deduped: !isNew
+      }
+    });
+
+    await notify("LinkNest", message);
+  } catch (error) {
+    await enqueueEvent({
+      type: "target_added_failed",
+      message: "Could not add target due to an unexpected error.",
+      payload: {
+        reason: "exception",
+        profileUrl: normalized.profileUrl,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    });
+    await notify("LinkNest", "Could not add target. Check popup for details.");
+  }
 }
 
 async function handleTargetDetected(payload) {
@@ -270,21 +314,24 @@ async function notify(title, message) {
   });
 }
 
-async function getTargetsMap() {
-  const data = await chrome.storage.local.get(STORE_KEYS.TARGETS);
-  return data[STORE_KEYS.TARGETS] ?? {};
+async function isRecentTargetAdd(profileSlug) {
+  const data = await chrome.storage.local.get(STORE_KEYS.RECENT_TARGET_ADD);
+  const map = data[STORE_KEYS.RECENT_TARGET_ADD] ?? {};
+  const ts = map[profileSlug];
+  return Boolean(ts && Date.now() - ts < 30 * 1000);
 }
 
-async function upsertLocalTarget(target) {
-  const map = await getTargetsMap();
-  map[target.profileUrl] = target;
-  await chrome.storage.local.set({ [STORE_KEYS.TARGETS]: map });
+async function markRecentTargetAdd(profileSlug) {
+  const data = await chrome.storage.local.get(STORE_KEYS.RECENT_TARGET_ADD);
+  const map = data[STORE_KEYS.RECENT_TARGET_ADD] ?? {};
+  map[profileSlug] = Date.now();
+  await chrome.storage.local.set({ [STORE_KEYS.RECENT_TARGET_ADD]: map });
 }
 
 async function getRecentDetectionFingerprint(fingerprint) {
   if (!fingerprint) return false;
-  const data = await chrome.storage.local.get("ln_recent_fingerprints");
-  const map = data.ln_recent_fingerprints ?? {};
+  const data = await chrome.storage.local.get(STORE_KEYS.RECENT_FINGERPRINTS);
+  const map = data[STORE_KEYS.RECENT_FINGERPRINTS] ?? {};
   const ts = map[fingerprint];
   if (!ts) return false;
   return Date.now() - ts < 5 * 60 * 1000;
@@ -292,10 +339,10 @@ async function getRecentDetectionFingerprint(fingerprint) {
 
 async function markRecentDetectionFingerprint(fingerprint) {
   if (!fingerprint) return;
-  const data = await chrome.storage.local.get("ln_recent_fingerprints");
-  const map = data.ln_recent_fingerprints ?? {};
+  const data = await chrome.storage.local.get(STORE_KEYS.RECENT_FINGERPRINTS);
+  const map = data[STORE_KEYS.RECENT_FINGERPRINTS] ?? {};
   map[fingerprint] = Date.now();
-  await chrome.storage.local.set({ ln_recent_fingerprints: map });
+  await chrome.storage.local.set({ [STORE_KEYS.RECENT_FINGERPRINTS]: map });
 }
 
 async function syncTargetsDelta() {
@@ -304,9 +351,7 @@ async function syncTargetsDelta() {
 
   const result = await syncTargetsDeltaApi({ updated_since: meta.lastSyncAt });
   if (Array.isArray(result.changes)) {
-    for (const change of result.changes) {
-      await upsertLocalTarget(change);
-    }
+    await applyDeltaSync(result.changes);
   }
 
   await chrome.storage.local.set({
