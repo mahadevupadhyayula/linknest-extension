@@ -1,5 +1,5 @@
 import { normalizeLinkedInProfileUrl, upsertLocalTarget } from "../lib/stores/targetsStore.js";
-import { normalizeInteractionEvent } from "../../shared/lib/schema/normalizers.js";
+import { normalizeInteractionEvent } from "../lib/schema/normalizers.js";
 import { CACHE_LIMITS, CACHE_TTL_MS, INTERACTION_BATCH_SIZE, MENU_IDS, STORE_KEYS, WRITE_BACKOFF_MS } from "./constants.js";
 import {
   clearEvents,
