@@ -20,6 +20,7 @@ export default function Popup() {
     passiveLoggingEnabled: false,
     shadowScanIntervalMs: 1000
   });
+  const [interactionQueue, setInteractionQueue] = useState([]);
 
   const loadData = async () => {
     const response = await chrome.runtime.sendMessage({ type: "LN_POPUP_GET_STATE" });
@@ -35,6 +36,7 @@ export default function Popup() {
     setBackendStatus(response.backendStatus ?? {});
     setUnreadCount(response.unreadCount ?? 0);
     setTelemetry(response.suggestTelemetry ?? { requests: 0, success: 0, errors: 0 });
+    setInteractionQueue(response.interactionQueue ?? []);
   };
 
   useEffect(() => {
@@ -114,6 +116,16 @@ export default function Popup() {
     }
   };
 
+  const clearInteractionQueue = async () => {
+    const response = await chrome.runtime.sendMessage({ type: "LN_POPUP_CLEAR_INTERACTION_QUEUE" });
+    if (response?.ok) {
+      setInteractionQueue([]);
+      setStatusMessage("Local interaction log queue deleted.");
+    } else {
+      setStatusMessage("Could not delete local interaction log queue.");
+    }
+  };
+
   const latestSuggestion = events.find((event) => event.type === "suggestion_ready");
   const bestSuggestion = latestSuggestion?.payload?.bestSuggestion ?? "";
 
@@ -176,6 +188,29 @@ export default function Popup() {
         <p style={{ margin: "0 0 4px", fontSize: 12 }}>Requests: {telemetry.requests ?? 0}</p>
         <p style={{ margin: "0 0 4px", fontSize: 12 }}>Success: {telemetry.success ?? 0}</p>
         <p style={{ margin: 0, fontSize: 12 }}>Errors: {telemetry.errors ?? 0}</p>
+      </section>
+
+      <section style={{ marginBottom: 12, border: "1px solid #ddd", borderRadius: 6, padding: 8 }}>
+        <h4 style={{ margin: "0 0 6px" }}>Passive Log Queue (local debug)</h4>
+        <p style={{ margin: "0 0 4px", fontSize: 12 }}>Queued items: {interactionQueue.length}</p>
+        <p style={{ margin: "0 0 8px", fontSize: 12, color: "#555" }}>
+          Logging is {settings.passiveLoggingEnabled ? "enabled" : "disabled"}.
+        </p>
+        <button type="button" onClick={() => void clearInteractionQueue()} disabled={interactionQueue.length === 0}>
+          Delete local interaction log queue
+        </button>
+        {interactionQueue.length > 0 ? (
+          <ul style={{ paddingLeft: 18, margin: "8px 0 0", maxHeight: 100, overflow: "auto" }}>
+            {interactionQueue.slice(0, 5).map((entry) => (
+              <li key={entry.id} style={{ marginBottom: 6, fontSize: 11 }}>
+                <div>{entry.payload?.type ?? "unknown"} · {entry.payload?.targetId ?? "no-target"}</div>
+                <div style={{ color: "#666" }}>
+                  at {entry.payload?.occurredAt ?? "n/a"} · ref {entry.payload?.refId ?? "n/a"}
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </section>
 
       <section>
