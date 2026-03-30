@@ -1,5 +1,16 @@
 # Placeholder contract specs
 
+## Planned backend endpoints (not wired yet)
+- `POST /api/targets/upsert` → upsert target from LinkedIn profile payload.
+- `POST /api/targets/sync/delta` → fetch incremental target changes since `updated_since`.
+- `GET /api/targets/sync/full` → fetch full target snapshot for recovery sync.
+- `POST /api/shadow/sessions` → record shadow mode session start/metadata.
+- `POST /api/shadow/detections` → log a target detection event from feed scan.
+- `POST /api/suggestions/generate` → generate response suggestions from selected context.
+- `GET /api/reminders/followups` → fetch follow-up reminders.
+- `POST /api/interactions/batch` → ingest interaction events in batches.
+- `POST /api/notifications/ack` → mark reminder/notification delivery as acknowledged.
+
 ## Target cache (local canonical shape)
 - Keyed by `profileSlug` under `ln_targets`.
 - Stored shape:

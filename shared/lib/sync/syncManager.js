@@ -1,3 +1,7 @@
+/**
+ * Default sync metadata kept in local storage and merged with persisted values.
+ * It tracks success/failure history so the orchestrator can escalate from delta to full sync.
+ */
 const DEFAULT_META = {
   lastSyncAt: null,
   failCount: 0,
@@ -8,6 +12,10 @@ const DEFAULT_META = {
   lastError: null
 };
 
+/**
+ * Run resilient target synchronization with automatic fallback from delta to full sync.
+ * A full sync is forced after repeated failures to recover from drift.
+ */
 export async function runDeltaSync({
   syncDelta,
   syncFull,

@@ -1,3 +1,7 @@
+/**
+ * Convert a LinkedIn profile URL into a canonical shape used across the extension.
+ * Returns `null` when the URL is missing, malformed, or not a /in/{slug} profile URL.
+ */
 export function normalizeLinkedInProfileUrl(rawUrl) {
   if (typeof rawUrl !== "string" || !rawUrl.trim()) return null;
 
@@ -23,6 +27,10 @@ export function normalizeLinkedInProfileUrl(rawUrl) {
   };
 }
 
+/**
+ * Coerce an interaction payload into the minimal backend-friendly contract.
+ * Returns `null` when required fields are missing.
+ */
 export function normalizeInteractionEvent(event) {
   if (!event || typeof event !== "object") return null;
   const { type, targetId = null, occurredAt, refId = null } = event;
