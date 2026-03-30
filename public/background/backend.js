@@ -1,4 +1,5 @@
 import { STORE_KEYS } from "./constants.js";
+const chrome = globalThis.chrome ?? globalThis.browser;
 
 export const backendApis = {
   upsertTarget,

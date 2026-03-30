@@ -14,8 +14,14 @@ import {
 import { enqueueEvent, recalculateUnreadCount, notify } from "./notifications.js";
 import { runTargetSync, scheduleBackgroundSync } from "./sync.js";
 import { validateInternalMessage } from "./validators.js";
+const chrome = globalThis.chrome ?? globalThis.browser;
 
 export function registerBackgroundOrchestrator() {
+  if (!chrome?.runtime?.onInstalled || !chrome?.runtime?.onStartup || !chrome?.runtime?.onMessage) {
+    console.error("LinkNest background: runtime APIs are unavailable in this browser context.");
+    return;
+  }
+
   chrome.runtime.onInstalled.addListener(async () => {
     await ensureDefaultSettings();
     await registerContextMenus();
@@ -30,12 +36,12 @@ export function registerBackgroundOrchestrator() {
     void flushWriteQueues(backendApis);
   });
 
-  chrome.tabs.onActivated.addListener(async ({ tabId }) => refreshMenusForTab(tabId));
-  chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
+  chrome.tabs?.onActivated?.addListener?.(async ({ tabId }) => refreshMenusForTab(tabId));
+  chrome.tabs?.onUpdated?.addListener?.(async (tabId, changeInfo) => {
     if (changeInfo.status === "complete") await refreshMenusForTab(tabId);
   });
 
-  chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  chrome.contextMenus?.onClicked?.addListener?.(async (info, tab) => {
     if (!tab?.id || !tab.url) return;
     const ctx = getPageContext(tab.url);
 
@@ -63,7 +69,7 @@ export function registerBackgroundOrchestrator() {
     return true;
   });
 
-  chrome.alarms.onAlarm.addListener(async (alarm) => {
+  chrome.alarms?.onAlarm?.addListener?.(async (alarm) => {
     if (alarm.name === ALARM_IDS.REMINDERS) {
       const reminders = await backendApis.fetchFollowupReminders({ limit: 5 });
       for (const reminder of reminders.reminders ?? []) {

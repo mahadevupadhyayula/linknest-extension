@@ -2,8 +2,11 @@ import { applyDeltaSync, getTargetsCacheState, replaceAllTargets } from "../lib/
 import { runDeltaSync as runSyncManager } from "../lib/sync/syncManager.js";
 import { ALARM_IDS, CACHE_TTL_MS, STORE_KEYS } from "./constants.js";
 import { enqueueEvent } from "./notifications.js";
+const chrome = globalThis.chrome ?? globalThis.browser;
 
 export function scheduleBackgroundSync() {
+  if (!chrome?.alarms?.create) return;
+
   chrome.alarms.create(ALARM_IDS.REMINDERS, { periodInMinutes: 20 });
   chrome.alarms.create(ALARM_IDS.TARGET_SYNC, { periodInMinutes: 10 });
   chrome.alarms.create(ALARM_IDS.WRITE_FLUSH, { periodInMinutes: 1 });
