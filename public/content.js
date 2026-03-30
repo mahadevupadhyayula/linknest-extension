@@ -66,9 +66,18 @@ function extractProfileMinimal() {
 }
 
 function extractSuggestionContextFromSelection() {
-  const text = window.getSelection()?.toString()?.trim() || "";
+  const MAX_CONTEXT_CHARS = 600;
+  const selection = window.getSelection()?.toString() ?? "";
+  const normalized = selection.replace(/\s+/g, " ").trim();
+  const text = normalized.slice(0, MAX_CONTEXT_CHARS);
+
   return {
-    text: text.slice(0, 1200)
+    text,
+    textMeta: {
+      selectedChars: normalized.length,
+      capturedChars: text.length,
+      wasTrimmed: normalized.length > text.length
+    }
   };
 }
 

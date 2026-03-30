@@ -10,8 +10,11 @@ export default function Popup() {
   const [backendStatus, setBackendStatus] = useState({});
   const [unreadCount, setUnreadCount] = useState(0);
   const [statusMessage, setStatusMessage] = useState("");
+  const [copiedMessage, setCopiedMessage] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isSuggesting, setIsSuggesting] = useState(false);
   const [refreshLabel, setRefreshLabel] = useState(REFRESH_LABEL_DEFAULT);
+  const [telemetry, setTelemetry] = useState({ requests: 0, success: 0, errors: 0 });
   const [settings, setSettings] = useState({
     quietMode: false,
     passiveLoggingEnabled: false,
@@ -31,6 +34,7 @@ export default function Popup() {
     setSyncMeta(response.syncMeta ?? { lastSyncAt: null });
     setBackendStatus(response.backendStatus ?? {});
     setUnreadCount(response.unreadCount ?? 0);
+    setTelemetry(response.suggestTelemetry ?? { requests: 0, success: 0, errors: 0 });
   };
 
   useEffect(() => {
@@ -93,6 +97,33 @@ export default function Popup() {
     }
   };
 
+  const requestSuggestion = async () => {
+    setIsSuggesting(true);
+    setStatusMessage("");
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "LN_POPUP_REQUEST_SUGGESTION" });
+      if (!response?.ok) {
+        throw new Error(response?.error ?? "Suggestion request failed.");
+      }
+      await loadData();
+      setStatusMessage("Suggestion generated.");
+    } catch (error) {
+      setStatusMessage(`Suggestion failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsSuggesting(false);
+    }
+  };
+
+  const latestSuggestion = events.find((event) => event.type === "suggestion_ready");
+  const bestSuggestion = latestSuggestion?.payload?.bestSuggestion ?? "";
+
+  const copySuggestion = async () => {
+    if (!bestSuggestion) return;
+    await navigator.clipboard.writeText(bestSuggestion);
+    setCopiedMessage("Copied.");
+    setTimeout(() => setCopiedMessage(""), 1200);
+  };
+
   return (
     <div style={{ padding: 12, width: 340, fontFamily: "Arial, sans-serif" }}>
       <h3 style={{ marginTop: 0 }}>LinkNest</h3>
@@ -104,6 +135,9 @@ export default function Popup() {
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         <button type="button" onClick={() => void refreshTargets()} disabled={isRefreshing}>
           {refreshLabel}
+        </button>
+        <button type="button" onClick={() => void requestSuggestion()} disabled={isSuggesting}>
+          {isSuggesting ? "Generating..." : "Generate suggestion"}
         </button>
         <button type="button" onClick={() => void clearAll()} disabled={events.length === 0}>
           Clear all
@@ -122,6 +156,26 @@ export default function Popup() {
         <p style={{ margin: 0, fontSize: 12, color: "#555" }}>
           {backendStatus.lastError ? `Last error: ${backendStatus.lastError}` : statusMessage || "No backend errors."}
         </p>
+      </section>
+
+      <section style={{ marginBottom: 12, border: "1px solid #ddd", borderRadius: 6, padding: 8 }}>
+        <h4 style={{ margin: "0 0 6px" }}>Latest Suggestion</h4>
+        <p style={{ margin: "0 0 8px", fontSize: 12, color: "#333" }}>
+          {bestSuggestion || "No suggestion generated yet."}
+        </p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button type="button" onClick={() => void copySuggestion()} disabled={!bestSuggestion}>
+            Copy to clipboard
+          </button>
+          <span style={{ fontSize: 12, color: "#2e7d32" }}>{copiedMessage}</span>
+        </div>
+      </section>
+
+      <section style={{ marginBottom: 12, border: "1px solid #ddd", borderRadius: 6, padding: 8 }}>
+        <h4 style={{ margin: "0 0 6px" }}>Suggestion Telemetry (local)</h4>
+        <p style={{ margin: "0 0 4px", fontSize: 12 }}>Requests: {telemetry.requests ?? 0}</p>
+        <p style={{ margin: "0 0 4px", fontSize: 12 }}>Success: {telemetry.success ?? 0}</p>
+        <p style={{ margin: 0, fontSize: 12 }}>Errors: {telemetry.errors ?? 0}</p>
       </section>
 
       <section>
