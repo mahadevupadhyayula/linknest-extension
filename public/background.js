@@ -24,7 +24,8 @@ const STORE_KEYS = {
   RECENT_FINGERPRINTS: "ln_recent_fingerprints",
   RECENT_TARGET_ADD: "ln_recent_target_add",
   TARGET_WRITE_QUEUE: "ln_target_write_queue",
-  INTERACTION_WRITE_QUEUE: "ln_interaction_write_queue"
+  INTERACTION_WRITE_QUEUE: "ln_interaction_write_queue",
+  SUGGEST_TELEMETRY: "ln_suggest_telemetry"
 };
 
 const ALARM_IDS = {
@@ -123,7 +124,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           STORE_KEYS.SESSION,
           STORE_KEYS.SYNC_META,
           STORE_KEYS.BACKEND_STATUS,
-          STORE_KEYS.UNREAD_COUNT
+          STORE_KEYS.UNREAD_COUNT,
+          STORE_KEYS.SUGGEST_TELEMETRY
         ])
       ]);
       sendResponse({
@@ -133,7 +135,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         session: data[STORE_KEYS.SESSION] ?? null,
         syncMeta: data[STORE_KEYS.SYNC_META] ?? { lastSyncAt: null },
         backendStatus: data[STORE_KEYS.BACKEND_STATUS] ?? {},
-        unreadCount: data[STORE_KEYS.UNREAD_COUNT] ?? 0
+        unreadCount: data[STORE_KEYS.UNREAD_COUNT] ?? 0,
+        suggestTelemetry: data[STORE_KEYS.SUGGEST_TELEMETRY] ?? { requests: 0, success: 0, errors: 0 }
       });
       return;
     }
@@ -164,6 +167,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         syncMeta: metaData[STORE_KEYS.SYNC_META] ?? { lastSyncAt: null },
         backendStatus: metaData[STORE_KEYS.BACKEND_STATUS] ?? {}
       });
+      return;
+    }
+
+    if (message?.type === "LN_POPUP_REQUEST_SUGGESTION") {
+      const result = await requestSuggestionFromActiveTab("popup_button");
+      sendResponse({ ok: result.ok, error: result.error ?? null });
       return;
     }
 
@@ -276,22 +285,64 @@ async function startShadowSession(tabId) {
 }
 
 async function requestSuggestion(tabId) {
-  const response = await chrome.tabs.sendMessage(tabId, { type: "LN_CAPTURE_SUGGESTION_CONTEXT" });
-  const text = response?.text ?? "";
+  await recordSuggestTelemetry("requests");
 
-  const suggestion = await generateResponseSuggestion({
-    context_type: "post",
-    text,
-    tone: "professional"
-  });
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { type: "LN_CAPTURE_SUGGESTION_CONTEXT" });
+    const text = response?.text ?? "";
+    const textMeta = response?.textMeta ?? {};
 
-  await enqueueEvent({
-    type: "suggestion_ready",
-    message: "Suggestion generated.",
-    payload: suggestion
-  });
+    if (!text) {
+      throw new Error("Select text first, then try Suggest Response.");
+    }
 
-  await notify("LinkNest", "Suggestion is ready in popup.");
+    const suggestion = await generateResponseSuggestion({
+      context_type: "post",
+      text,
+      tone: "professional"
+    });
+
+    await enqueueEvent({
+      type: "suggestion_ready",
+      message: "Suggestion generated.",
+      payload: {
+        bestSuggestion: suggestion.best_suggestion ?? "",
+        confidence: suggestion.confidence ?? null,
+        contextType: suggestion.contextEcho ?? "post",
+        contextSummary: {
+          selectedChars: textMeta.selectedChars ?? text.length,
+          capturedChars: textMeta.capturedChars ?? text.length,
+          wasTrimmed: Boolean(textMeta.wasTrimmed)
+        }
+      }
+    });
+
+    await recordSuggestTelemetry("success");
+    await notify("LinkNest", "Suggestion is ready in popup.");
+    return { ok: true };
+  } catch (error) {
+    await enqueueEvent({
+      type: "suggestion_failed",
+      message: error instanceof Error ? error.message : "Suggestion generation failed.",
+      payload: { reason: "suggestion_request_error" }
+    });
+    await recordSuggestTelemetry("errors");
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function requestSuggestionFromActiveTab(source) {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id || !tab.url?.includes("linkedin.com")) {
+    await enqueueEvent({
+      type: "suggestion_failed",
+      message: "Open a LinkedIn tab to generate suggestions.",
+      payload: { reason: "no_active_linkedin_tab", source }
+    });
+    return { ok: false, error: "No active LinkedIn tab found." };
+  }
+
+  return requestSuggestion(tab.id);
 }
 
 async function addTargetFromProfile(tabId) {
@@ -747,6 +798,23 @@ async function recordBackendStatus(update) {
       ...update
     }
   });
+}
+
+async function recordSuggestTelemetry(counter) {
+  const data = await chrome.storage.local.get(STORE_KEYS.SUGGEST_TELEMETRY);
+  const current = data[STORE_KEYS.SUGGEST_TELEMETRY] ?? {
+    requests: 0,
+    success: 0,
+    errors: 0
+  };
+
+  const next = {
+    ...current,
+    [counter]: (current[counter] ?? 0) + 1,
+    updatedAt: new Date().toISOString()
+  };
+  await chrome.storage.local.set({ [STORE_KEYS.SUGGEST_TELEMETRY]: next });
+  return next;
 }
 
 function wait(ms) {
