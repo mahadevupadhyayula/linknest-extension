@@ -120,6 +120,22 @@ await chrome.storage.local.get(null)
 
 - Application panel → Storage → Extension storage → `chrome.storage.local`.
 
+### 6) Troubleshooting common MV3 load errors
+
+If you see either of these errors in `chrome://extensions`:
+
+- `An unknown error occurred when fetching the script.`
+- `Service worker registration failed. Status code: 3`
+
+check the following:
+
+1. Use `npm run build` (not `rpm run build`).
+2. Load **`dist/`** as the unpacked extension directory.
+3. Run `npm run verify:build` to confirm `dist/manifest.json` and `dist/background.js` exist and match.
+4. After rebuilding, click **Reload** on the extension card.
+
+These errors usually mean Chrome cannot find the service worker file referenced by `background.service_worker` in `manifest.json`.
+
 ### 5) Changelog discipline
 
 All behavior changes for extension runtime, message contracts, storage shape, or operator UX must be added to `CHANGELOG.md` in the next unreleased section.
