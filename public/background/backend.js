@@ -1,0 +1,89 @@
+import { STORE_KEYS } from "./constants.js";
+
+export const backendApis = {
+  upsertTarget,
+  startShadowSessionApi,
+  logTargetDetection,
+  generateResponseSuggestion,
+  fetchFollowupReminders,
+  logInteractionBatch,
+  syncTargetsDeltaApi,
+  syncTargetsFullApi
+};
+
+async function upsertTarget(payload) {
+  return withBackendRetry("upsert_target", async () => ({ status: "added", target_id: payload.profile_url, message: "Placeholder target upsert success" }));
+}
+
+async function startShadowSessionApi(payload) {
+  return withBackendRetry("start_shadow_session", async () => ({ session_id: crypto.randomUUID(), status: "running", ...payload }));
+}
+
+async function logTargetDetection(payload) {
+  return withBackendRetry("log_target_detection", async () => ({ status: "logged", payload }));
+}
+
+async function generateResponseSuggestion(payload) {
+  return withBackendRetry("generate_response_suggestion", async () => ({
+    suggestions: [
+      "Great insight—curious how this has changed your strategy in 2026?",
+      "Thanks for sharing. What signal do you watch first when prioritizing this?"
+    ],
+    best_suggestion: "Great insight—curious how this has changed your strategy in 2026?",
+    confidence: 0.62,
+    contextEcho: payload.context_type
+  }));
+}
+
+async function fetchFollowupReminders() {
+  return withBackendRetry("fetch_followup_reminders", async () => ({ reminders: [] }));
+}
+
+async function logInteractionBatch(payload) {
+  return withBackendRetry("log_interaction_batch", async () => ({ accepted_count: payload.events?.length ?? 0, rejected_count: 0 }));
+}
+
+async function syncTargetsDeltaApi() {
+  return withBackendRetry("sync_targets_delta", async () => ({ changes: [] }));
+}
+
+async function syncTargetsFullApi() {
+  return withBackendRetry("sync_targets_full", async () => ({ targets: [] }));
+}
+
+async function withBackendRetry(action, task, attempts = 2) {
+  let attempt = 0;
+  let lastError = null;
+
+  while (attempt < attempts) {
+    attempt += 1;
+    try {
+      const result = await task();
+      await recordBackendStatus({ action, status: "ok", retries: attempt - 1, lastSuccessAt: new Date().toISOString(), lastError: null });
+      return result;
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await wait(200);
+    }
+  }
+
+  await recordBackendStatus({
+    action,
+    status: "error",
+    retries: attempts - 1,
+    lastFailureAt: new Date().toISOString(),
+    lastError: lastError instanceof Error ? lastError.message : String(lastError)
+  });
+
+  throw lastError;
+}
+
+async function recordBackendStatus(update) {
+  const data = await chrome.storage.local.get(STORE_KEYS.BACKEND_STATUS);
+  const current = data[STORE_KEYS.BACKEND_STATUS] ?? {};
+  await chrome.storage.local.set({ [STORE_KEYS.BACKEND_STATUS]: { ...current, ...update } });
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
