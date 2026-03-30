@@ -47,6 +47,7 @@ const CACHE_TTL_MS = {
 };
 
 const WRITE_BACKOFF_MS = [5_000, 30_000, 2 * 60_000, 10 * 60_000];
+const INTERACTION_BATCH_SIZE = 25;
 
 chrome.runtime.onInstalled.addListener(async () => {
   await ensureDefaultSettings();
@@ -105,8 +106,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message?.type === "LN_INTERACTION_LOG") {
+      const settings = await getSettings();
+      if (!settings.passiveLoggingEnabled) {
+        sendResponse({ ok: true, skipped: true, reason: "passive_logging_disabled" });
+        return;
+      }
+
       await enqueueInteractionWrite(message.payload);
-      sendResponse({ ok: true });
+      sendResponse({ ok: true, skipped: false });
       return;
     }
 
@@ -125,7 +132,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           STORE_KEYS.SYNC_META,
           STORE_KEYS.BACKEND_STATUS,
           STORE_KEYS.UNREAD_COUNT,
-          STORE_KEYS.SUGGEST_TELEMETRY
+          STORE_KEYS.SUGGEST_TELEMETRY,
+          STORE_KEYS.INTERACTION_WRITE_QUEUE
         ])
       ]);
       sendResponse({
@@ -136,7 +144,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         syncMeta: data[STORE_KEYS.SYNC_META] ?? { lastSyncAt: null },
         backendStatus: data[STORE_KEYS.BACKEND_STATUS] ?? {},
         unreadCount: data[STORE_KEYS.UNREAD_COUNT] ?? 0,
-        suggestTelemetry: data[STORE_KEYS.SUGGEST_TELEMETRY] ?? { requests: 0, success: 0, errors: 0 }
+        suggestTelemetry: data[STORE_KEYS.SUGGEST_TELEMETRY] ?? { requests: 0, success: 0, errors: 0 },
+        interactionQueue: (data[STORE_KEYS.INTERACTION_WRITE_QUEUE] ?? []).map((entry) => ({
+          id: entry.id,
+          attemptCount: entry.attemptCount ?? 0,
+          queuedAt: entry.queuedAt ?? null,
+          nextRetryAt: entry.nextRetryAt ?? null,
+          payload: entry.payload
+        }))
       });
       return;
     }
@@ -173,6 +188,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === "LN_POPUP_REQUEST_SUGGESTION") {
       const result = await requestSuggestionFromActiveTab("popup_button");
       sendResponse({ ok: result.ok, error: result.error ?? null });
+      return;
+    }
+
+    if (message?.type === "LN_POPUP_CLEAR_INTERACTION_QUEUE") {
+      await chrome.storage.local.set({ [STORE_KEYS.INTERACTION_WRITE_QUEUE]: [] });
+      sendResponse({ ok: true });
       return;
     }
 
@@ -607,16 +628,27 @@ async function enqueueTargetWrite(payload) {
 }
 
 async function enqueueInteractionWrite(event) {
+  const normalized = normalizeInteractionEvent(event);
+  if (!normalized) {
+    return { ok: false, queued: false, error: new Error("Invalid interaction payload.") };
+  }
+
   return processWriteWithQueue({
     queueKey: STORE_KEYS.INTERACTION_WRITE_QUEUE,
-    payload: event,
-    executor: async (queuedEvent) => logInteractionBatch({ events: [queuedEvent] })
+    payload: normalized,
+    executor: async (eventsOrEvent) =>
+      logInteractionBatch({ events: Array.isArray(eventsOrEvent) ? eventsOrEvent : [eventsOrEvent] })
   });
 }
 
 async function flushWriteQueues() {
   await flushQueue(STORE_KEYS.TARGET_WRITE_QUEUE, upsertTarget);
-  await flushQueue(STORE_KEYS.INTERACTION_WRITE_QUEUE, async (event) => logInteractionBatch({ events: [event] }));
+  const settings = await getSettings();
+  if (settings.passiveLoggingEnabled) {
+    await flushQueue(STORE_KEYS.INTERACTION_WRITE_QUEUE, async (events) => logInteractionBatch({ events }), {
+      batchSize: INTERACTION_BATCH_SIZE
+    });
+  }
 }
 
 async function processWriteWithQueue({ queueKey, payload, executor }) {
@@ -647,28 +679,61 @@ async function processWriteWithQueue({ queueKey, payload, executor }) {
   }
 }
 
-async function flushQueue(queueKey, executor) {
+async function flushQueue(queueKey, executor, options = {}) {
   const queueData = await chrome.storage.local.get(queueKey);
   const queue = queueData[queueKey] ?? [];
   if (!queue.length) return;
 
+  const batchSize = options.batchSize && options.batchSize > 0 ? options.batchSize : 1;
   const now = Date.now();
   const remaining = [];
+  const readyEntries = [];
 
   for (const entry of queue) {
     if (entry.nextRetryAt && entry.nextRetryAt > now) {
       remaining.push(entry);
       continue;
     }
+    readyEntries.push(entry);
+  }
+
+  for (let idx = 0; idx < readyEntries.length; idx += batchSize) {
+    const chunk = readyEntries.slice(idx, idx + batchSize);
+    const chunkPayload = chunk.map((entry) => entry.payload);
 
     try {
-      await executor(entry.payload);
+      await executor(batchSize === 1 ? chunkPayload[0] : chunkPayload);
     } catch (error) {
-      remaining.push(createQueuedWrite(entry.payload, error, entry.attemptCount ?? 0));
+      for (const entry of chunk) {
+        remaining.push(createQueuedWrite(entry.payload, error, entry.attemptCount ?? 0));
+      }
     }
   }
 
   await chrome.storage.local.set({ [queueKey]: remaining });
+}
+
+async function getSettings() {
+  const data = await chrome.storage.local.get(STORE_KEYS.SETTINGS);
+  return {
+    quietMode: false,
+    passiveLoggingEnabled: false,
+    shadowScanIntervalMs: 1000,
+    shadowSessionTimeoutMin: 30,
+    ...(data[STORE_KEYS.SETTINGS] ?? {})
+  };
+}
+
+function normalizeInteractionEvent(event) {
+  if (!event || typeof event !== "object") return null;
+  const { type, targetId = null, occurredAt, refId = null } = event;
+  if (!type || !occurredAt) return null;
+  return {
+    type: String(type),
+    targetId: targetId ? String(targetId) : null,
+    occurredAt: String(occurredAt),
+    refId: refId ? String(refId) : null
+  };
 }
 
 function createQueuedWrite(payload, error = null, priorAttempts = 0) {
