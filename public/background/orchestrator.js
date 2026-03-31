@@ -16,6 +16,16 @@ import { runTargetSync, scheduleBackgroundSync } from "./sync.js";
 import { validateInternalMessage } from "./validators.js";
 const chrome = globalThis.chrome ?? globalThis.browser;
 
+async function configureSidePanelForTab(tabId, tabUrl) {
+  if (!chrome.sidePanel?.setOptions || !tabId || typeof tabUrl !== "string") return;
+  const isLinkedIn = tabUrl.startsWith("https://www.linkedin.com/");
+  await chrome.sidePanel.setOptions({
+    tabId,
+    path: "sidepanel.html",
+    enabled: isLinkedIn
+  });
+}
+
 export function registerBackgroundOrchestrator() {
   if (!chrome?.runtime?.onInstalled || !chrome?.runtime?.onStartup || !chrome?.runtime?.onMessage) {
     console.error("LinkNest background: runtime APIs are unavailable in this browser context.");
@@ -24,6 +34,9 @@ export function registerBackgroundOrchestrator() {
 
   chrome.runtime.onInstalled.addListener(async () => {
     await ensureDefaultSettings();
+    if (chrome.sidePanel?.setPanelBehavior) {
+      await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+    }
     await registerContextMenus();
     await recalculateUnreadCount();
     scheduleBackgroundSync();
@@ -36,9 +49,17 @@ export function registerBackgroundOrchestrator() {
     void flushWriteQueues(backendApis);
   });
 
-  chrome.tabs?.onActivated?.addListener?.(async ({ tabId }) => refreshMenusForTab(tabId));
-  chrome.tabs?.onUpdated?.addListener?.(async (tabId, changeInfo) => {
-    if (changeInfo.status === "complete") await refreshMenusForTab(tabId);
+  chrome.tabs?.onActivated?.addListener?.(async ({ tabId }) => {
+    await refreshMenusForTab(tabId);
+    const tab = await chrome.tabs.get(tabId);
+    await configureSidePanelForTab(tabId, tab?.url ?? "");
+  });
+
+  chrome.tabs?.onUpdated?.addListener?.(async (tabId, changeInfo, tab) => {
+    if (changeInfo.status === "complete") {
+      await refreshMenusForTab(tabId);
+      await configureSidePanelForTab(tabId, tab?.url ?? "");
+    }
   });
 
   chrome.contextMenus?.onClicked?.addListener?.(async (info, tab) => {

@@ -7,7 +7,8 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
-        popup: "popup.html"   // 👈 ROOT FILE
+        popup: "popup.html",
+        sidepanel: "sidepanel.html"
       }
     }
   }
