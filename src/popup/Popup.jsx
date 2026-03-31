@@ -4,6 +4,8 @@ const SETTINGS_KEY = "ln_settings";
 const REFRESH_LABEL_DEFAULT = "Refresh targets";
 
 export default function Popup() {
+  const [activeSection, setActiveSection] = useState("work");
+  const [showAdvancedDebug, setShowAdvancedDebug] = useState(false);
   const [events, setEvents] = useState([]);
   const [session, setSession] = useState(null);
   const [syncMeta, setSyncMeta] = useState({ lastSyncAt: null });
@@ -133,7 +135,7 @@ export default function Popup() {
     if (!bestSuggestion) return;
     await navigator.clipboard.writeText(bestSuggestion);
     setCopiedMessage("Copied.");
-    setTimeout(() => setCopiedMessage(""), 1200);
+    setTimeout(() => setCopiedMessage(""), 2000);
   };
 
   return (
@@ -145,131 +147,176 @@ export default function Popup() {
       <p style={{ margin: "0 0 12px", color: "#444", fontSize: 12 }}>Unread notifications: {unreadCount}</p>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-        <button type="button" onClick={() => void refreshTargets()} disabled={isRefreshing}>
-          {refreshLabel}
-        </button>
-        <button type="button" onClick={() => void requestSuggestion()} disabled={isSuggesting}>
-          {isSuggesting ? "Generating..." : "Generate suggestion"}
-        </button>
-        <button type="button" onClick={() => void clearAll()} disabled={events.length === 0}>
-          Clear all
-        </button>
+        {[
+          { id: "work", label: "Work" },
+          { id: "inbox", label: "Inbox" },
+          { id: "settings", label: "Settings" }
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveSection(tab.id)}
+            style={{
+              padding: "4px 8px",
+              borderRadius: 999,
+              border: activeSection === tab.id ? "1px solid #1a73e8" : "1px solid #ccc",
+              background: activeSection === tab.id ? "#e8f0fe" : "#fff",
+              color: activeSection === tab.id ? "#174ea6" : "#333"
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      <section style={{ marginBottom: 12, border: "1px solid #ddd", borderRadius: 6, padding: 8 }}>
-        <h4 style={{ margin: "0 0 6px" }}>Status</h4>
-        <p style={{ margin: "0 0 4px", color: backendStatus.status === "error" ? "#b71c1c" : "#2e7d32", fontSize: 12 }}>
-          Backend: {backendStatus.status ?? "idle"}
-          {backendStatus.action ? ` (${backendStatus.action})` : ""}
-        </p>
-        <p style={{ margin: "0 0 4px", fontSize: 12 }}>
-          Retries: {backendStatus.retries ?? 0}
-        </p>
-        <p style={{ margin: 0, fontSize: 12, color: "#555" }}>
-          {backendStatus.lastError ? `Last error: ${backendStatus.lastError}` : statusMessage || "No backend errors."}
-        </p>
-      </section>
+      {activeSection === "work" ? (
+        <>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            <button type="button" onClick={() => void refreshTargets()} disabled={isRefreshing}>
+              {refreshLabel}
+            </button>
+            <button
+              type="button"
+              onClick={() => void requestSuggestion()}
+              disabled={isSuggesting}
+              style={{ background: "#1a73e8", border: "1px solid #185abc", color: "#fff" }}
+            >
+              {isSuggesting ? "Generating..." : "Generate suggestion"}
+            </button>
+          </div>
 
-      <section style={{ marginBottom: 12, border: "1px solid #ddd", borderRadius: 6, padding: 8 }}>
-        <h4 style={{ margin: "0 0 6px" }}>Latest Suggestion</h4>
-        <p style={{ margin: "0 0 8px", fontSize: 12, color: "#333" }}>
-          {bestSuggestion || "No suggestion generated yet."}
-        </p>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button type="button" onClick={() => void copySuggestion()} disabled={!bestSuggestion}>
-            Copy to clipboard
-          </button>
-          <span style={{ fontSize: 12, color: "#2e7d32" }}>{copiedMessage}</span>
-        </div>
-      </section>
+          <section style={{ marginBottom: 12, border: "1px solid #ddd", borderRadius: 6, padding: 8 }}>
+            <h4 style={{ margin: "0 0 6px" }}>Status</h4>
+            <p style={{ margin: "0 0 4px", color: backendStatus.status === "error" ? "#b71c1c" : "#2e7d32", fontSize: 12 }}>
+              Backend: {backendStatus.status ?? "idle"}
+              {backendStatus.action ? ` (${backendStatus.action})` : ""}
+            </p>
+            <p style={{ margin: "0 0 4px", fontSize: 12 }}>
+              Retries: {backendStatus.retries ?? 0}
+            </p>
+            <p style={{ margin: 0, fontSize: 12, color: "#555" }}>
+              {backendStatus.lastError ? `Last error: ${backendStatus.lastError}` : statusMessage || "All systems ready."}
+            </p>
+          </section>
 
-      <section style={{ marginBottom: 12, border: "1px solid #ddd", borderRadius: 6, padding: 8 }}>
-        <h4 style={{ margin: "0 0 6px" }}>Suggestion Telemetry (local)</h4>
-        <p style={{ margin: "0 0 4px", fontSize: 12 }}>Requests: {telemetry.requests ?? 0}</p>
-        <p style={{ margin: "0 0 4px", fontSize: 12 }}>Success: {telemetry.success ?? 0}</p>
-        <p style={{ margin: 0, fontSize: 12 }}>Errors: {telemetry.errors ?? 0}</p>
-      </section>
+          <section style={{ marginBottom: 12, border: "1px solid #ddd", borderRadius: 6, padding: 8 }}>
+            <h4 style={{ margin: "0 0 6px" }}>Latest Suggestion</h4>
+            <p style={{ margin: "0 0 8px", fontSize: 12, color: "#333" }}>
+              {bestSuggestion || "No suggestion yet. Generate one when you're ready."}
+            </p>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button type="button" onClick={() => void copySuggestion()} disabled={!bestSuggestion}>
+                Copy to clipboard
+              </button>
+              <span style={{ fontSize: 12, color: "#2e7d32" }}>{copiedMessage}</span>
+            </div>
+          </section>
 
-      <section style={{ marginBottom: 12, border: "1px solid #ddd", borderRadius: 6, padding: 8 }}>
-        <h4 style={{ margin: "0 0 6px" }}>Passive Log Queue (local debug)</h4>
-        <p style={{ margin: "0 0 4px", fontSize: 12 }}>Queued items: {interactionQueue.length}</p>
-        <p style={{ margin: "0 0 8px", fontSize: 12, color: "#555" }}>
-          Logging is {settings.passiveLoggingEnabled ? "enabled" : "disabled"}.
-        </p>
-        <button type="button" onClick={() => void clearInteractionQueue()} disabled={interactionQueue.length === 0}>
-          Delete local interaction log queue
-        </button>
-        {interactionQueue.length > 0 ? (
-          <ul style={{ paddingLeft: 18, margin: "8px 0 0", maxHeight: 100, overflow: "auto" }}>
-            {interactionQueue.slice(0, 5).map((entry) => (
-              <li key={entry.id} style={{ marginBottom: 6, fontSize: 11 }}>
-                <div>{entry.payload?.type ?? "unknown"} · {entry.payload?.targetId ?? "no-target"}</div>
-                <div style={{ color: "#666" }}>
-                  at {entry.payload?.occurredAt ?? "n/a"} · ref {entry.payload?.refId ?? "n/a"}
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-      </section>
+          <details
+            style={{ marginBottom: 12, border: "1px solid #ddd", borderRadius: 6, padding: 8 }}
+            open={showAdvancedDebug}
+            onToggle={(event) => setShowAdvancedDebug(event.currentTarget.open)}
+          >
+            <summary style={{ cursor: "pointer", fontWeight: 700 }}>Advanced (debug)</summary>
+            <section style={{ marginTop: 8 }}>
+              <h4 style={{ margin: "0 0 6px" }}>Suggestion Telemetry (local)</h4>
+              <p style={{ margin: "0 0 4px", fontSize: 12 }}>Requests: {telemetry.requests ?? 0}</p>
+              <p style={{ margin: "0 0 4px", fontSize: 12 }}>Success: {telemetry.success ?? 0}</p>
+              <p style={{ margin: 0, fontSize: 12 }}>Errors: {telemetry.errors ?? 0}</p>
+            </section>
 
-      <section>
-        <h4 style={{ margin: "0 0 8px" }}>Recent Events</h4>
-        {events.length === 0 ? (
-          <p style={{ color: "#666" }}>No events yet.</p>
-        ) : (
-          <ul style={{ paddingLeft: 18, margin: 0 }}>
-            {events.slice(0, 6).map((event) => (
-              <li key={event.id} style={{ marginBottom: 8 }}>
-                <div>
-                  <strong>{event.type}</strong>: {event.message}
-                </div>
-                <div style={{ marginTop: 4, display: "flex", gap: 8 }}>
-                  <button type="button" onClick={() => void markRead(event.id)} disabled={Boolean(event.readAt)}>
-                    {event.readAt ? "Read" : "Mark read"}
-                  </button>
-                  <button type="button" onClick={() => void dismiss(event.id)}>
-                    Dismiss
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+            <section style={{ marginTop: 10 }}>
+              <h4 style={{ margin: "0 0 6px" }}>Passive Log Queue (local debug)</h4>
+              <p style={{ margin: "0 0 4px", fontSize: 12 }}>Queued items: {interactionQueue.length}</p>
+              <p style={{ margin: "0 0 8px", fontSize: 12, color: "#555" }}>
+                Logging is {settings.passiveLoggingEnabled ? "enabled" : "disabled"}.
+              </p>
+              <button type="button" onClick={() => void clearInteractionQueue()} disabled={interactionQueue.length === 0}>
+                Delete local interaction log queue
+              </button>
+              {interactionQueue.length > 0 ? (
+                <ul style={{ paddingLeft: 18, margin: "8px 0 0", maxHeight: 100, overflow: "auto" }}>
+                  {interactionQueue.slice(0, 5).map((entry) => (
+                    <li key={entry.id} style={{ marginBottom: 6, fontSize: 11 }}>
+                      <div>{entry.payload?.type ?? "unknown"} · {entry.payload?.targetId ?? "no-target"}</div>
+                      <div style={{ color: "#666" }}>
+                        at {entry.payload?.occurredAt ?? "n/a"} · ref {entry.payload?.refId ?? "n/a"}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </section>
+          </details>
+        </>
+      ) : null}
 
-      <section>
-        <h4>Settings</h4>
-        <label style={{ display: "block", marginBottom: 6 }}>
-          <input
-            type="checkbox"
-            checked={settings.quietMode}
-            onChange={(e) => void patchSetting({ quietMode: e.target.checked })}
-          />{" "}
-          Quiet mode
-        </label>
+      {activeSection === "inbox" ? (
+        <section style={{ marginBottom: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <h4 style={{ margin: 0 }}>Recent Events</h4>
+            <button type="button" onClick={() => void clearAll()} disabled={events.length === 0}>
+              Clear all
+            </button>
+          </div>
+          {events.length === 0 ? (
+            <p style={{ color: "#666" }}>No inbox events yet.</p>
+          ) : (
+            <ul style={{ paddingLeft: 18, margin: 0 }}>
+              {events.slice(0, 6).map((event) => (
+                <li key={event.id} style={{ marginBottom: 8 }}>
+                  <div>
+                    <strong>{event.type}</strong>: {event.message}
+                  </div>
+                  <div style={{ marginTop: 4, display: "flex", gap: 8 }}>
+                    <button type="button" onClick={() => void markRead(event.id)} disabled={Boolean(event.readAt)}>
+                      {event.readAt ? "Read" : "Mark read"}
+                    </button>
+                    <button type="button" onClick={() => void dismiss(event.id)}>
+                      Dismiss
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : null}
 
-        <label style={{ display: "block", marginBottom: 6 }}>
-          <input
-            type="checkbox"
-            checked={settings.passiveLoggingEnabled}
-            onChange={(e) => void patchSetting({ passiveLoggingEnabled: e.target.checked })}
-          />{" "}
-          Passive interaction logging (opt-in)
-        </label>
+      {activeSection === "settings" ? (
+        <section>
+          <h4>Settings</h4>
+          <label style={{ display: "block", marginBottom: 6 }}>
+            <input
+              type="checkbox"
+              checked={settings.quietMode}
+              onChange={(e) => void patchSetting({ quietMode: e.target.checked })}
+            />{" "}
+            Quiet mode
+          </label>
 
-        <label style={{ display: "block" }}>
-          Shadow scan interval (ms):
-          <input
-            type="number"
-            min={700}
-            step={100}
-            value={settings.shadowScanIntervalMs}
-            onChange={(e) => void patchSetting({ shadowScanIntervalMs: Number(e.target.value) })}
-            style={{ width: "100%", marginTop: 4 }}
-          />
-        </label>
-      </section>
+          <label style={{ display: "block", marginBottom: 6 }}>
+            <input
+              type="checkbox"
+              checked={settings.passiveLoggingEnabled}
+              onChange={(e) => void patchSetting({ passiveLoggingEnabled: e.target.checked })}
+            />{" "}
+            Passive interaction logging (opt-in)
+          </label>
+
+          <label style={{ display: "block" }}>
+            Shadow scan interval (ms):
+            <input
+              type="number"
+              min={700}
+              step={100}
+              value={settings.shadowScanIntervalMs}
+              onChange={(e) => void patchSetting({ shadowScanIntervalMs: Number(e.target.value) })}
+              style={{ width: "100%", marginTop: 4 }}
+            />
+          </label>
+        </section>
+      ) : null}
     </div>
   );
 }
