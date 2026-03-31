@@ -1,4 +1,4 @@
-import { normalizeLinkedInProfileUrl, upsertLocalTarget } from "../lib/stores/targetsStore.js";
+import { getTargetsMap, normalizeLinkedInProfileUrl, upsertLocalTarget } from "../lib/stores/targetsStore.js";
 import { normalizeInteractionEvent } from "../lib/schema/normalizers.js";
 import { CACHE_LIMITS, CACHE_TTL_MS, INTERACTION_BATCH_SIZE, MENU_IDS, STORE_KEYS, WRITE_BACKOFF_MS } from "./constants.js";
 import {
@@ -43,7 +43,12 @@ export async function registerContextMenus() {
 
   await chrome.contextMenus.removeAll();
   chrome.contextMenus.create({ id: MENU_IDS.SHADOW_ME, title: "LinkNest: Shadow Me", contexts: ["page"], documentUrlPatterns: ["https://www.linkedin.com/feed/*"] });
-  chrome.contextMenus.create({ id: MENU_IDS.SUGGEST_RESPONSE, title: "LinkNest: Suggest a Response", contexts: ["selection", "page"], documentUrlPatterns: ["https://www.linkedin.com/feed/*"] });
+  chrome.contextMenus.create({
+    id: MENU_IDS.SUGGEST_RESPONSE,
+    title: "LinkNest: Suggest a Response",
+    contexts: ["selection", "page"],
+    documentUrlPatterns: ["https://www.linkedin.com/feed/*", "https://www.linkedin.com/messaging/*"]
+  });
   chrome.contextMenus.create({ id: MENU_IDS.ADD_TARGET, title: "LinkNest: Add to Target List", contexts: ["page"], documentUrlPatterns: ["https://www.linkedin.com/in/*"] });
   chrome.contextMenus.create({ id: MENU_IDS.ANALYZE_PROFILE_MATCH, title: "LinkNest: Analyze Profile Match (Future)", contexts: ["page"], documentUrlPatterns: ["https://www.linkedin.com/in/*"] });
 }
@@ -89,12 +94,60 @@ export async function requestSuggestion(tabId, apis) {
     const response = await chrome.tabs.sendMessage(tabId, { type: "LN_CAPTURE_SUGGESTION_CONTEXT" });
     if (!validateSuggestionContextResponse(response)) throw new Error("Invalid suggestion context payload.");
 
-    const text = response.text ?? "";
-    const textMeta = response.textMeta ?? {};
-    if (!text) throw new Error("Select text first, then try Suggest Response.");
+    let text = response.text ?? "";
+    let textMeta = response.textMeta ?? {};
+    let resolvedContext = response;
 
-    const suggestion = await apis.generateResponseSuggestion({ context_type: "post", text, tone: "professional" });
-    await enqueueEvent({ type: "suggestion_ready", message: "Suggestion generated.", payload: { bestSuggestion: suggestion.best_suggestion ?? "", confidence: suggestion.confidence ?? null, contextType: suggestion.contextEcho ?? "post", contextSummary: { selectedChars: textMeta.selectedChars ?? text.length, capturedChars: textMeta.capturedChars ?? text.length, wasTrimmed: Boolean(textMeta.wasTrimmed) } } });
+    if (!text) {
+      const fallback = await chrome.tabs.sendMessage(tabId, { type: "LN_PROMPT_SUGGESTION_CONTEXT" });
+      const fallbackText = typeof fallback?.text === "string" ? fallback.text.trim() : "";
+      if (!fallbackText) throw new Error("Select text or add a brief context, then try Suggest Response.");
+
+      text = fallbackText;
+      textMeta = {
+        selectedChars: 0,
+        capturedChars: fallbackText.length,
+        wasTrimmed: false
+      };
+      resolvedContext = {
+        ...response,
+        contextType: "manual",
+        text,
+        highlightedText: fallbackText
+      };
+    }
+
+    const contextType = mapSuggestionContextType(resolvedContext.contextType);
+    await maybePromptAndAddAuthorToTargets(tabId, resolvedContext, apis);
+
+    const suggestion = await apis.generateResponseSuggestion({
+      context_type: contextType,
+      text,
+      tone: "professional",
+      context: {
+        highlightedText: resolvedContext.highlightedText ?? text,
+        postText: resolvedContext.postText ?? null,
+        commentText: resolvedContext.commentText ?? null,
+        postUrl: resolvedContext.postUrl ?? null,
+        author: resolvedContext.author ?? null
+      }
+    });
+    await enqueueEvent({
+      type: "suggestion_ready",
+      message: "Suggestion generated.",
+      payload: {
+        bestSuggestion: suggestion.best_suggestion ?? "",
+        confidence: suggestion.confidence ?? null,
+        contextType: suggestion.contextEcho ?? contextType,
+        contextSummary: {
+          selectedChars: textMeta.selectedChars ?? text.length,
+          capturedChars: textMeta.capturedChars ?? text.length,
+          wasTrimmed: Boolean(textMeta.wasTrimmed),
+          postUrl: resolvedContext.postUrl ?? null,
+          authorName: resolvedContext.author?.displayName ?? null
+        }
+      }
+    });
     await recordSuggestTelemetry("success");
     await notify("LinkNest", "Suggestion is ready in popup.");
     return { ok: true };
@@ -103,6 +156,63 @@ export async function requestSuggestion(tabId, apis) {
     await recordSuggestTelemetry("errors");
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function mapSuggestionContextType(rawType) {
+  if (rawType === "comment") return "comment_reply";
+  if (rawType === "dm") return "dm_reply";
+  if (rawType === "manual") return "manual_context";
+  return "post";
+}
+
+async function maybePromptAndAddAuthorToTargets(tabId, context, apis) {
+  if (context?.contextType !== "post") return;
+
+  const author = context.author ?? {};
+  const normalized = normalizeLinkedInProfileUrl(author.profileUrl ?? "");
+  if (!normalized) return;
+
+  const targetsMap = await getTargetsMap();
+  if (targetsMap[normalized.profileSlug]) return;
+
+  const confirmResponse = await chrome.tabs.sendMessage(tabId, {
+    type: "LN_CONFIRM_ADD_AUTHOR_TO_TARGETS",
+    payload: { displayName: author.displayName ?? "Unknown" }
+  });
+
+  if (!confirmResponse?.ok || !confirmResponse.accepted) return;
+
+  const apiResult = await enqueueTargetWrite(
+    {
+      profile_url: normalized.profileUrl,
+      display_name: author.displayName ?? "Unknown",
+      source: "feed_post_author",
+      captured_at: new Date().toISOString()
+    },
+    apis
+  );
+
+  const { target, isNew } = await upsertLocalTarget({
+    targetId: apiResult.target_id,
+    profileUrl: normalized.profileUrl,
+    displayName: author.displayName ?? "Unknown",
+    source: "feed_post_author",
+    status: "active",
+    capturedAt: new Date().toISOString()
+  });
+
+  await enqueueEvent({
+    type: "target_added_success",
+    message: isNew
+      ? `${target.displayName} added to target list from feed suggestion flow.`
+      : `${target.displayName} is already in your target list.`,
+    payload: {
+      targetId: target.targetId,
+      profileUrl: target.profileUrl,
+      profileSlug: target.profileSlug,
+      source: "suggestion_author_prompt"
+    }
+  });
 }
 
 /**
