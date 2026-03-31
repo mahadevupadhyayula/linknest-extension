@@ -13,7 +13,8 @@ export const BACKEND_ENDPOINTS = {
   fetchFollowupReminders: { method: "GET", path: "/api/reminders/followups" },
   logInteractionBatch: { method: "POST", path: "/api/interactions/batch" },
   syncTargetsDeltaApi: { method: "POST", path: "/api/targets/sync/delta" },
-  syncTargetsFullApi: { method: "GET", path: "/api/targets/sync/full" }
+  syncTargetsFullApi: { method: "GET", path: "/api/targets/sync/full" },
+  analyzeProfileMatchApi: { method: "POST", path: "/api/targets/analyze" }
 };
 
 export const backendApis = {
@@ -24,7 +25,8 @@ export const backendApis = {
   fetchFollowupReminders,
   logInteractionBatch,
   syncTargetsDeltaApi,
-  syncTargetsFullApi
+  syncTargetsFullApi,
+  analyzeProfileMatchApi
 };
 
 /**
@@ -89,6 +91,17 @@ async function syncTargetsDeltaApi() {
  */
 async function syncTargetsFullApi() {
   return withBackendRetry("sync_targets_full", async () => ({ targets: [] }));
+}
+
+/**
+ * Placeholder for POST /api/targets/analyze
+ */
+async function analyzeProfileMatchApi(payload) {
+  return withBackendRetry("analyze_profile_match", async () => ({
+    decision: payload?.headline?.toLowerCase().includes("sales") ? "add_target" : "move_on",
+    reason: "Placeholder profile-fit heuristic based on headline relevance.",
+    confidence: 0.57
+  }));
 }
 
 async function withBackendRetry(action, task, attempts = 2) {

@@ -2,8 +2,13 @@ import { normalizeLinkedInProfileUrl } from "../schema/normalizers.js";
 
 const KEY = "ln_targets";
 const TARGETS_CACHE_META_KEY = "ln_targets_cache_meta";
+const RELATIONSHIP_STAGES = new Set(["hot", "warm", "cold"]);
 
 export { normalizeLinkedInProfileUrl };
+
+function normalizeRelationshipStage(stage) {
+  return RELATIONSHIP_STAGES.has(stage) ? stage : "cold";
+}
 
 export function toCanonicalTarget(target = {}, nowIso = new Date().toISOString()) {
   const normalized = normalizeLinkedInProfileUrl(target.profileUrl ?? target.profile_url);
@@ -21,6 +26,7 @@ export function toCanonicalTarget(target = {}, nowIso = new Date().toISOString()
     headline,
     source,
     status: target.status ?? "active",
+    relationshipStage: normalizeRelationshipStage(target.relationshipStage ?? target.relationship_stage),
     capturedAt: target.capturedAt ?? target.captured_at ?? nowIso,
     createdAt: target.createdAt ?? nowIso,
     updatedAt: nowIso
@@ -60,6 +66,40 @@ export async function upsertLocalTarget(target) {
 
   await chrome.storage.local.set({ [KEY]: updatedMap });
   return { target: next, isNew: !existing };
+}
+
+export async function removeLocalTarget(profileSlug) {
+  const map = await getTargetsMap();
+  if (!profileSlug || !map[profileSlug]) return { removed: false, target: null };
+
+  const target = map[profileSlug];
+  const next = { ...map };
+  delete next[profileSlug];
+  await chrome.storage.local.set({ [KEY]: next });
+  return { removed: true, target };
+}
+
+export async function setTargetRelationshipStage(profileSlug, relationshipStage) {
+  const map = await getTargetsMap();
+  const existing = map[profileSlug];
+  if (!existing) {
+    return { updated: false, target: null };
+  }
+
+  const next = {
+    ...existing,
+    relationshipStage: normalizeRelationshipStage(relationshipStage),
+    updatedAt: new Date().toISOString()
+  };
+
+  await chrome.storage.local.set({
+    [KEY]: {
+      ...map,
+      [profileSlug]: next
+    }
+  });
+
+  return { updated: true, target: next };
 }
 
 export async function applyDeltaSync(changes = []) {

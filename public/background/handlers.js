@@ -1,4 +1,10 @@
-import { getTargetsMap, normalizeLinkedInProfileUrl, upsertLocalTarget } from "../lib/stores/targetsStore.js";
+import {
+  getTargetsMap,
+  normalizeLinkedInProfileUrl,
+  removeLocalTarget,
+  setTargetRelationshipStage,
+  upsertLocalTarget
+} from "../lib/stores/targetsStore.js";
 import { normalizeInteractionEvent } from "../lib/schema/normalizers.js";
 import { CACHE_LIMITS, CACHE_TTL_MS, INTERACTION_BATCH_SIZE, MENU_IDS, STORE_KEYS, WRITE_BACKOFF_MS } from "./constants.js";
 import {
@@ -229,6 +235,58 @@ export async function requestSuggestionFromActiveTab(source, apis) {
 }
 
 /**
+ * Generate a suggestion from manually provided context when no selection exists.
+ */
+export async function requestSuggestionFromManualContext(payload, apis) {
+  const manualText = typeof payload?.text === "string" ? payload.text.trim() : "";
+  if (!manualText) {
+    return { ok: false, error: "Add context text to generate a suggestion." };
+  }
+
+  const manualType = payload?.contextType === "comment" || payload?.contextType === "dm" ? payload.contextType : "post";
+  const mappedContextType = mapSuggestionContextType(manualType);
+
+  try {
+    await recordSuggestTelemetry("requests");
+    const suggestion = await apis.generateResponseSuggestion({
+      context_type: mappedContextType,
+      text: manualText,
+      tone: "professional",
+      context: {
+        highlightedText: manualText,
+        postText: manualType === "post" ? manualText : null,
+        commentText: manualType === "comment" ? manualText : null
+      }
+    });
+    await enqueueEvent({
+      type: "suggestion_ready",
+      message: "Suggestion generated from manual context.",
+      payload: {
+        bestSuggestion: suggestion.best_suggestion ?? "",
+        confidence: suggestion.confidence ?? null,
+        contextType: suggestion.contextEcho ?? mappedContextType,
+        contextSummary: {
+          selectedChars: manualText.length,
+          capturedChars: manualText.length,
+          wasTrimmed: false,
+          source: "manual_popup"
+        }
+      }
+    });
+    await recordSuggestTelemetry("success");
+    return { ok: true };
+  } catch (error) {
+    await enqueueEvent({
+      type: "suggestion_failed",
+      message: error instanceof Error ? error.message : "Suggestion generation failed.",
+      payload: { reason: "manual_suggestion_request_error" }
+    });
+    await recordSuggestTelemetry("errors");
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
  * Extract and normalize profile details from a tab, then upsert both remote and local target records.
  */
 export async function addTargetFromProfile(tabId, apis) {
@@ -256,6 +314,40 @@ export async function addTargetFromProfile(tabId, apis) {
     await enqueueEvent({ type: "target_added_failed", message: "Could not add target due to an unexpected error.", payload: { reason: "exception", profileUrl: normalized.profileUrl, error: error instanceof Error ? error.message : String(error) } });
     await notify("LinkNest", "Could not add target. Check popup for details.");
   }
+}
+
+/**
+ * Analyze a profile for target-fit and surface a backend recommendation.
+ */
+export async function analyzeTargetFromProfile(tabId, apis) {
+  const profile = await chrome.tabs.sendMessage(tabId, { type: "LN_EXTRACT_PROFILE_MINIMAL" });
+  if (!validateProfileResponse(profile)) throw new Error("Invalid profile payload received from content script.");
+
+  const normalized = normalizeLinkedInProfileUrl(profile?.profileUrl);
+  if (!normalized) {
+    return { ok: false, error: "Could not analyze profile: invalid LinkedIn profile URL." };
+  }
+
+  const analysis = await apis.analyzeProfileMatchApi({
+    profile_url: normalized.profileUrl,
+    display_name: profile?.displayName ?? "Unknown",
+    headline: profile?.headline ?? ""
+  });
+
+  await enqueueEvent({
+    type: "target_analysis_ready",
+    message: `${profile?.displayName ?? "Profile"} analysis: ${analysis?.decision === "add_target" ? "Add target" : "Move on"}.`,
+    payload: {
+      profileUrl: normalized.profileUrl,
+      profileSlug: normalized.profileSlug,
+      displayName: profile?.displayName ?? "Unknown",
+      decision: analysis?.decision ?? "move_on",
+      confidence: analysis?.confidence ?? null,
+      reason: analysis?.reason ?? null
+    }
+  });
+
+  return { ok: true, analysis };
 }
 
 /**
@@ -329,6 +421,49 @@ export async function handleRuntimeMessage(message, apis) {
   if (message.type === "LN_POPUP_REQUEST_SUGGESTION") {
     const result = await requestSuggestionFromActiveTab("popup_button", apis);
     return { ok: result.ok, error: result.error ?? null };
+  }
+
+  if (message.type === "LN_POPUP_REQUEST_SUGGESTION_MANUAL") {
+    return requestSuggestionFromManualContext(message.payload ?? {}, apis);
+  }
+
+  if (message.type === "LN_POPUP_ADD_TARGET_FROM_ACTIVE_PROFILE") {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id || !tab?.url?.includes("linkedin.com/in/")) {
+      return { ok: false, error: "Open a LinkedIn profile page to add a target." };
+    }
+
+    await addTargetFromProfile(tab.id, apis);
+    return { ok: true };
+  }
+
+  if (message.type === "LN_POPUP_ANALYZE_ACTIVE_PROFILE") {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id || !tab?.url?.includes("linkedin.com/in/")) {
+      return { ok: false, error: "Open a LinkedIn profile page to analyze a target." };
+    }
+
+    return analyzeTargetFromProfile(tab.id, apis);
+  }
+
+  if (message.type === "LN_POPUP_REMOVE_TARGET") {
+    const profileSlug = message.payload?.profileSlug;
+    const result = await removeLocalTarget(profileSlug);
+    if (!result.removed) return { ok: false, error: "Target was not found." };
+    await enqueueEvent({
+      type: "target_removed",
+      message: `${result.target.displayName} removed from target list.`,
+      payload: { profileSlug: result.target.profileSlug, profileUrl: result.target.profileUrl }
+    });
+    return { ok: true };
+  }
+
+  if (message.type === "LN_POPUP_SET_TARGET_STAGE") {
+    const profileSlug = message.payload?.profileSlug;
+    const relationshipStage = message.payload?.relationshipStage;
+    const result = await setTargetRelationshipStage(profileSlug, relationshipStage);
+    if (!result.updated) return { ok: false, error: "Target was not found." };
+    return { ok: true, target: result.target };
   }
 
   if (message.type === "LN_POPUP_CLEAR_INTERACTION_QUEUE") {
