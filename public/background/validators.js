@@ -53,6 +53,12 @@ export function validateInternalMessage(message) {
 export function validateSuggestionContextResponse(response) {
   if (!isObject(response)) return false;
   if (typeof response.text !== "string") return false;
+  if (response.contextType != null && typeof response.contextType !== "string") return false;
+  if (response.highlightedText != null && typeof response.highlightedText !== "string") return false;
+  if (response.postText != null && typeof response.postText !== "string") return false;
+  if (response.commentText != null && typeof response.commentText !== "string") return false;
+  if (response.postUrl != null && typeof response.postUrl !== "string") return false;
+  if (response.author != null && !isObject(response.author)) return false;
   return response.textMeta == null || isObject(response.textMeta);
 }
 
