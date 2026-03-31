@@ -10,6 +10,11 @@ The format is loosely based on Keep a Changelog and uses semantic-style version 
 - README architecture diagram and explicit event-flow documentation.
 - Developer runbook for loading the unpacked extension, simulating flows, and inspecting storage.
 - Safe defaults PR-review checklist and known limitations section.
+- Browser side panel entry point (`sidepanel.html`) that reuses LinkNest operator controls.
+
+### Changed
+- Extension action click now opens the LinkNest side panel.
+- Side panel is enabled for LinkedIn tabs and disabled elsewhere.
 
 ## [0.8.0] - 2026-03-30
 

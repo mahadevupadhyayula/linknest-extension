@@ -11,7 +11,7 @@ Backend calls are placeholder methods with documented input/output contracts.
 flowchart TD
   LI[LinkedIn DOM] --> CS[Content Script\npublic/content.js]
   CS -->|runtime messages| BG[Background Service Worker\npublic/background.js + orchestrator]
-  POP[Popup UI\nsrc/popup/Popup.jsx] -->|LN_POPUP_* messages| BG
+  POP[Popup + Side Panel UI\nsrc/popup/Popup.jsx] -->|LN_POPUP_* messages| BG
   BG --> ST[(chrome.storage.local)]
   BG --> BK[Backend client adapters\nplaceholder contracts]
   BK --> BG
@@ -24,7 +24,7 @@ flowchart TD
 - `public/background.js`: registers the background orchestrator.
 - `public/background/orchestrator.js`: central message routing, queue flushing, sync triggers, and state snapshots.
 - `public/content.js`: LinkedIn profile/context extraction and shadow detection loop.
-- `src/popup/Popup.jsx`: operator controls (refresh/suggest/settings), local telemetry, and event inbox.
+- `src/popup/Popup.jsx`: operator controls (refresh/suggest/settings), local telemetry, and event inbox (shared by popup + side panel entry points).
 - `src/lib/*` and `shared/lib/*`: store utilities, normalization, and sync helpers.
 
 ## Event flow

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "LinkNest Extension",
   "version": "1.1.0",
-  "permissions": ["storage", "activeTab", "scripting", "contextMenus", "notifications", "alarms"],
+  "permissions": ["storage", "activeTab", "scripting", "contextMenus", "notifications", "alarms", "sidePanel"],
   "host_permissions": ["https://www.linkedin.com/*"],
   "background": {
     "service_worker": "background.js",
@@ -10,6 +10,9 @@
   },
   "action": {
     "default_popup": "popup.html"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
   },
   "content_scripts": [
     {
