@@ -72,6 +72,20 @@ Use this checklist before merging extension behavior changes:
 
 See `src/types/contracts.md` for concise contract shapes.
 
+For a practical endpoint-by-endpoint wiring guide and sequence diagrams, see `docs-backend-integration.md`.
+
+For a documentation-gap review and completion checklist, see `docs-documentation-audit.md`.
+
+For pre-publish validation steps, see `docs-release-smoke-checklist.md`.
+
+Additional required docs for backend handoff:
+- `docs-backend-auth-config.md`
+- `docs-api-schema-examples.md`
+- `docs-retry-error-semantics.md`
+- `docs-message-contracts.md`
+- `docs-storage-schema.md`
+- `docs-security-privacy.md`
+
 ## Developer runbook
 
 ### 1) Install and build
